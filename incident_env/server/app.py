@@ -211,6 +211,12 @@ h1{font-size:42px;font-weight:800;background:linear-gradient(135deg,#f8fafc,#94a
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@app.get("/", response_class=HTMLResponse)
+def root():
+    """Root landing page — served to HuggingFace Spaces App tab."""
+    return LANDING_HTML
+
+
 @app.get("/api", response_class=HTMLResponse)
 def landing():
     """API overview page."""
