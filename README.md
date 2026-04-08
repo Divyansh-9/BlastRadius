@@ -3,9 +3,7 @@ title: BlastRadius
 emoji: 💥
 colorFrom: red
 colorTo: yellow
-sdk: gradio
-sdk_version: 6.10.0
-app_file: app_ui.py
+sdk: docker
 pinned: false
 ---
 
