@@ -2,7 +2,7 @@
 title: BlastRadius
 emoji: 💥
 colorFrom: red
-colorTo: orange
+colorTo: yellow
 sdk: gradio
 sdk_version: 6.10.0
 app_file: app_ui.py
