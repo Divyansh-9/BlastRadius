@@ -294,7 +294,7 @@ def info():
 
 
 @app.post("/reset", response_model=StepResponse)
-def reset(request: ResetRequest):
+def reset(request: Optional[ResetRequest] = None):
     """
     Initialize a new incident episode.
 
@@ -302,6 +302,8 @@ def reset(request: ResetRequest):
     - task_id: "easy" | "medium" | "hard"
     - eval_mode: boolean toggle for anti-cheat
     """
+    if request is None:
+        request = ResetRequest()
     from incident_env.models import IncidentAction
     result = env.reset(task_id=request.task_id, eval_mode=request.eval_mode)
     return StepResponse(
