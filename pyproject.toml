@@ -15,7 +15,12 @@ dependencies = [
     "pydantic>=2.0.0",
     "requests>=2.31.0",
     "openai>=1.0.0",
+    "openenv-core>=0.2.0",
+    "gradio>=4.0.0",
 ]
+
+[project.scripts]
+server = "incident_env.server.app:app"
 
 [project.optional-dependencies]
 dev = [
