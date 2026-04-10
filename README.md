@@ -104,7 +104,7 @@ Payment service is DOWN — but it's a victim, not the cause. Auth service deplo
 *Tests: Root cause analysis vs. symptom chasing. Causal chain reasoning.*
 
 ### Hard: Thundering Herd After CDN Cache Invalidation
-**Expected score: 0.1-0.3**
+**Expected score: 0.4-0.6**
 
 CDN cache was invalidated (routine, NOT the cause). All traffic hits the backend, overwhelming the API gateway, which cascades into a database connection storm. CDN metrics look scary but it's functioning correctly. Fix ORDER matters — wrong order causes thundering herd.
 
