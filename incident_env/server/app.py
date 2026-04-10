@@ -161,19 +161,19 @@ h1{font-size:42px;font-weight:800;background:linear-gradient(135deg,#f8fafc,#94a
       <div class="card-diff easy">● Easy</div>
       <h3>DB Pool Exhaustion</h3>
       <p>Connection pool maxed out. API gateway returning 503s. Clear diagnostic signals.</p>
-      <div class="score easy">0.70</div>
+      <div class="score easy">0.85</div>
     </div>
     <div class="card">
       <div class="card-diff medium">● Medium</div>
       <h3>Bad Deployment Cascade</h3>
       <p>Broken JWT deploy on auth service. Payment service logs are a red herring.</p>
-      <div class="score medium">0.75</div>
+      <div class="score medium">0.65</div>
     </div>
     <div class="card">
       <div class="card-diff hard">● Hard</div>
       <h3>Thundering Herd</h3>
       <p>CDN cache miss storm. Misleading signals. Fix order is critical.</p>
-      <div class="score hard">0.15</div>
+      <div class="score hard">0.55</div>
     </div>
   </div>
 
@@ -353,21 +353,21 @@ def tasks():
                 "title": "Database Connection Pool Exhaustion",
                 "difficulty": "easy",
                 "description": "Single service failure with clear logs. Straightforward fix.",
-                "expected_score": "0.7-0.9",
+                "expected_score": "0.8-1.0",
             },
             {
                 "id": "medium",
                 "title": "Bad Deployment Cascade",
                 "difficulty": "medium",
                 "description": "Root cause analysis required. Red herring in victim service logs.",
-                "expected_score": "0.4-0.6",
+                "expected_score": "0.5-0.7",
             },
             {
                 "id": "hard",
                 "title": "Thundering Herd After CDN Cache Invalidation",
                 "difficulty": "hard",
                 "description": "Multi-service cascade with misleading signals. Fix order critical.",
-                "expected_score": "0.1-0.3",
+                "expected_score": "0.4-0.6",
             },
         ]
     }
