@@ -124,11 +124,12 @@ We benchmarked 3 leading models against the incidents. BlastRadius grades reason
 
 | Task | Llama 3.1 (8B) | Gemini 1.5 Flash | Llama 3.3 (70B) |
 |---|---|---|---|
-| **Easy** | 0.85 🟢 | 0.88 🟢 | 0.90 🟢 |
-| **Medium** | 0.65 🟢 | *(hit rate limits)* | 0.75 🟢 |
-| **Hard** | 0.55 🟡 | 0.85 🟢 | 0.88 🟢 |
+| **Easy** | 0.91 🟢 | 0.88 🟢 | 0.90 🟢 |
+| **Medium** | 1.00 🟢 | *(hit rate limits)* | 0.75 🟢 |
+| **Hard** | 0.00 🔴 | 0.85 🟢 | 0.88 🟢 |
 
-**Insight**: Hard mode features strict fix-order constraints (API gateway must be fixed *before* scaling the database, or a thundering herd penalty triggers). Models that correctly trace the causal chain score 4-6× higher than those that fix symptoms first. This proves BlastRadius is a genuine SRE *reasoning* benchmark, not just a pattern-matching task.
+> ⓘ **Note**: The environment evaluates causal reasoning strictly. For example, Llama 3.1 scored a perfect `1.0` on Medium by cleanly rolling back an upstream deployment, but scored `0.0` on Hard because it violated the "thundering herd" rule (it scaled the front-end load balancer before scaling the crushed API gateway backend). 
+> **You can verify this exact run yourself.** See the raw timestamped LLM log in [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## 🚀 Setup & Usage
 

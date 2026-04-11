@@ -61,29 +61,28 @@ CRITICAL RULES:
 5. Look for: recent deployments (rollback them), resource exhaustion (scale them), crashed services (restart them)
 
 ⚠️ FIX ORDER IS CRITICAL — wrong order causes cascading damage and PENALTIES:
-- ALWAYS fix the service that OTHER services depend on FIRST (the upstream service)
-- The service that is DOWN and has the most downstream dependents is the true root cause
-- Fix the entry point of the cascade chain (closest to traffic source) before fixing downstream
-- NEVER scale or restart a downstream service while its upstream dependency is still broken
-- Example: if api-gateway is DOWN and database has connection storms, fix api-gateway FIRST
-  because the database storm is CAUSED BY api-gateway retries, not the other way around
+- For crashes/bugs, ALWAYS fix the service that OTHER services depend on FIRST (the upstream service)
+- The service that is DOWN and has the most downstream dependents is usually the true root cause
+- NEVER restart a downstream service while its upstream dependency is still broken
+- THUNDERING HERD RULE: If scaling services to handle a massive traffic surge, you MUST scale the BACKEND (e.g., api-gateway, database) BEFORE scaling the FRONTEND (e.g., load-balancer). Scaling the frontend first will crush the backend.
 
 Available commands (respond with EXACTLY one JSON object):
 - {"command": "check_status"}
 - {"command": "check_logs", "target": "<service>"}
-- {"command": "check_metrics", "target": "<service>"}
 - {"command": "check_dependencies"}
 - {"command": "diagnose", "parameters": {"root_cause": "<service>", "causal_chain": ["step1", "step2"], "confidence": 0.8}}
 - {"command": "restart_service", "target": "<service>"}
 - {"command": "rollback_deploy", "target": "<service>"}
-- {"command": "scale_service", "target": "<service>", "parameters": {"instances": 4}}
+- {"command": "scale_service", "target": "<service>"}
+  (Use scale_service for instances or connections; the simulator auto-applies correct params)
 
 Key signals to look for:
 - If logs mention "deployment" or version numbers → rollback_deploy that service
-- If a service is DOWN and has no recent deploy → restart_service
+- If logs mention "connection pool exhausted" → scale_service that database
+- If logs mention "thread pool exhausted", "OOM killed", or "overwhelmed" → scale_service the crushed service
+- If a service is DOWN and has no recent deploy or scale issue → restart_service
 - If service A depends on service B, and B is broken → fix B first, THEN fix A
 - High connection counts on a service that OTHER services depend on = likely root cause → fix it FIRST
-- A service showing "connection storm" or "pool exhausted" may be a VICTIM, not the cause
 
 Respond with ONLY a valid JSON object. No markdown. No explanation."""
 
@@ -359,7 +358,7 @@ def main():
         return
 
     print(f"{'='*60}", flush=True)
-    print(f"IT Incident Response Environment — Baseline Inference", flush=True)
+    print(f"IT Incident Response Environment - Baseline Inference", flush=True)
     print(f"Model: {MODEL_NAME}", flush=True)
     print(f"API:   {API_BASE_URL}", flush=True)
     print(f"Env:   {ENV_BASE_URL}", flush=True)
@@ -367,9 +366,9 @@ def main():
 
     scores = {}
     for task_id in TASKS:
-        print(f"\n{'─'*40}", flush=True)
+        print(f"\n{'-'*40}", flush=True)
         print(f"Running task: {task_id}", flush=True)
-        print(f"{'─'*40}", flush=True)
+        print(f"{'-'*40}", flush=True)
 
         try:
             score = run_task(client, ENV_BASE_URL, task_id)
@@ -380,7 +379,7 @@ def main():
             score = 0.0
 
         scores[task_id] = score
-        print(f"\n✅ Task '{task_id}' score: {score:.4f}", flush=True)
+        print(f"\n[DONE] Task '{task_id}' score: {score:.4f}", flush=True)
 
     # ------------------------------------------------------------------
     # Summary
@@ -389,10 +388,10 @@ def main():
     print(f"RESULTS SUMMARY", flush=True)
     print(f"{'='*60}", flush=True)
     for task_id, score in scores.items():
-        emoji = "🟢" if score >= 0.7 else "🟡" if score >= 0.4 else "🔴"
-        print(f"  {emoji} {task_id:10s}: {score:.4f}", flush=True)
+        tag = "[HIGH]" if score >= 0.7 else "[MED] " if score >= 0.4 else "[LOW] "
+        print(f"  {tag} {task_id:10s}: {score:.4f}", flush=True)
     avg = sum(scores.values()) / len(scores) if scores else 0.0
-    print(f"\n  📊 Average:   {avg:.4f}", flush=True)
+    print(f"\n  [AVG]  Average:   {avg:.4f}", flush=True)
     print(f"{'='*60}", flush=True)
 
 

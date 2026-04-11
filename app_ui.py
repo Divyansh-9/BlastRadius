@@ -106,9 +106,9 @@ def handle_step(command: str, target: str, params_str: str):
 # Update BOTH places if scores change after a re-run.
 # ---------------------------------------------------------------------------
 SCENARIO_BENCHMARKS = [
-    {"name": "DB Pool Exhaustion",      "task_id": "easy",   "difficulty": "EASY",   "score": 0.85},
-    {"name": "Bad Deployment Cascade",  "task_id": "medium", "difficulty": "MEDIUM", "score": 0.65},
-    {"name": "Thundering Herd",         "task_id": "hard",   "difficulty": "HARD",   "score": 0.55},
+    {"name": "DB Pool Exhaustion",      "task_id": "easy",   "difficulty": "EASY",   "score": 0.91},
+    {"name": "Bad Deployment Cascade",  "task_id": "medium", "difficulty": "MEDIUM", "score": 1.00},
+    {"name": "Thundering Herd",         "task_id": "hard",   "difficulty": "HARD",   "score": 0.00},
 ]
 
 def _benchmark_table_md() -> str:
