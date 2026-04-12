@@ -124,11 +124,11 @@ We benchmarked 3 leading models against the incidents. BlastRadius grades reason
 
 | Task | Llama 3.1 (8B) | Gemini 1.5 Flash | Llama 3.3 (70B) |
 |---|---|---|---|
-| **Easy** | 0.91 🟢 | 0.88 🟢 | 0.90 🟢 |
+| **Easy** | 0.74 🟢 | 0.88 🟢 | 0.90 🟢 |
 | **Medium** | 1.00 🟢 | *(hit rate limits)* | 0.75 🟢 |
-| **Hard** | 0.00 🔴 | 0.85 🟢 | 0.88 🟢 |
+| **Hard** | 0.13 🔴 | 0.85 🟢 | 0.88 🟢 |
 
-> ⓘ **Note**: The environment evaluates causal reasoning strictly. For example, Llama 3.1 scored a perfect `1.0` on Medium by cleanly rolling back an upstream deployment, but scored `0.0` on Hard because it violated the "thundering herd" rule (it scaled the front-end load balancer before scaling the crushed API gateway backend). 
+> ⓘ **Note**: The environment evaluates causal reasoning strictly. For example, Llama 3.1 scored a perfect `1.0` on Medium by cleanly rolling back an upstream deployment, but struggled on Hard (`0.13`) because it correctly diagnosed and scaled the frontend load balancer but subsequently failed to properly scale the backend database.
 > **You can verify this exact run yourself.** See the raw timestamped LLM log in [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## 🚀 Setup & Usage

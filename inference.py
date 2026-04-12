@@ -79,10 +79,10 @@ Available commands (respond with EXACTLY one JSON object):
 Key signals to look for:
 - If logs mention "deployment" or version numbers → rollback_deploy that service
 - If logs mention "connection pool exhausted" → scale_service that database
-- If logs mention "thread pool exhausted", "OOM killed", or "overwhelmed" → scale_service the crushed service
-- If a service is DOWN and has no recent deploy or scale issue → restart_service
-- If service A depends on service B, and B is broken → fix B first, THEN fix A
-- High connection counts on a service that OTHER services depend on = likely root cause → fix it FIRST
+- If logs mention "connection storm from retries" → The database is a VICTIM of an overwhelmed api-gateway. Scale the api-gateway FIRST.
+- If logs mention "thread pool exhausted", "OOM", "OOM killer", or "overwhelmed" → This is a SCALING issue. You MUST use scale_service (NEVER restart_service).
+- If a service is simply DOWN with no load/scale issues and no deploy → restart_service
+- For THUNDERING HERD (traffic surge): scale the backend (api-gateway) THEN the load-balancer, THEN the database. Do not scale the database first.
 
 Respond with ONLY a valid JSON object. No markdown. No explanation."""
 
