@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "incident-response-env"
+version = "1.0.0"
+description = "IT Incident Response OpenEnv: an RL environment for SRE/DevOps agent training"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.0.0",
+    "requests>=2.31.0",
+    "openai>=1.0.0",
+    "openenv-core>=0.2.0",
+    "gradio>=5.0.0",
+    "plotly>=5.0.0",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "httpx>=0.25.0",
+]
+train = [
+    "datasets>=2.14.0",
+    "transformers>=4.36.0",
+    "trl>=0.12.0",
+    "peft>=0.7.0",
+    "bitsandbytes>=0.41.0",
+    "accelerate>=0.25.0",
+    "torch>=2.1.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["incident_env*", "server*", "agent*"]

@@ -1,0 +1,52 @@
+spec_version: 1
+name: incident-response-env
+type: incident_response
+runtime: docker
+app: incident_env.server.app:app
+port: 7860
+description: >
+  IT Incident Response Environment — an OpenEnv-compliant RL environment
+  that simulates production infrastructure failures. Agents diagnose
+  cascading service outages, identify root causes via causal reasoning,
+  and apply fixes under time pressure as failures spread.
+tasks:
+  - id: easy
+    name: "Database Connection Pool Exhaustion"
+    difficulty: easy
+    description: "Single service failure with clear diagnostic signals"
+  - id: medium
+    name: "Bad Deployment Cascade"
+    difficulty: medium
+    description: "Root cause analysis with red herring victim services"
+  - id: hard
+    name: "Thundering Herd After CDN Cache Invalidation"
+    difficulty: hard
+    description: "Multi-service cascade with misleading signals and fix-order constraints"
+  - id: easy_dns_propagation
+    name: "Stale DNS TTL Propagation"
+    difficulty: easy
+    description: "Diagnose a routing issue causing traffic drops after infrastructure migration."
+  - id: easy_redis_oom
+    name: "Redis OOM Catastrophe"
+    difficulty: easy
+    description: "Session cache exhausts memory causing logouts. Rollback bad deploy."
+  - id: medium_cert_expiry
+    name: "Internal mTLS Certificate Expiry"
+    difficulty: medium
+    description: "Expired internal certs cause silent 502s upstream. Renew and reset proxies."
+  - id: medium_k8s_eviction
+    name: "Kubernetes Pod Eviction Storm"
+    difficulty: medium
+    description: "Noisy neighbor memory leak triggers cluster-wide pod eviction storm."
+  - id: hard_regex_catastrophe
+    name: "WAF Regex Catastrophe"
+    difficulty: hard
+    description: "Bad firewall regex triggers DDoS-like CPU starvation and TCP queue drops."
+  - id: hard_db_failover
+    name: "Database Split-Brain Failover"
+    difficulty: hard
+    description: "Stale replica promotion leads to split-brain. Resolve topology and flush connections."
+  - id: hard_s3_keyspace_overflow
+    name: "Object Storage Keyspace Overflow"
+    difficulty: hard
+    description: "Runaway batch job overwhelms metadata index causing read timeouts."
