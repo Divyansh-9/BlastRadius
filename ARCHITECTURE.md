@@ -14,6 +14,7 @@ The core of BlastRadius is not a real Kubernetes cluster, but a pure-Python stat
 - **`ServiceNode`**: Represents a microservice (e.g., `auth-service`). It tracks its current `ServiceStatus` (HEALTHY, DEGRADED, DOWN), resource metrics, and deployment history.
 - **`CascadeRule`**: The logic that models failures spreading over time. Example: If `database` is down for 5 simulated minutes, `auth-service` transitions to DEGRADED.
 - **`ServiceGraph`**: The temporal evolution engine. Its core method `tick(minutes)` advances the simulation clock, evaluates cascade rules, and propagates collateral damage if fixes are applied out of order.
+- **Auto-Recovery**: If a root-cause service is successfully rolled back or restarted, the downstream cascade victims (`fixable_by=[]`) automatically recover their health without requiring direct action.
 
 ### `grader.py` (The RL Reward Signal)
 The original engine used brittle substring matching. We rebuilt this into a **TF-IDF Semantic Engine**.
@@ -23,6 +24,7 @@ The original engine used brittle substring matching. We rebuilt this into a **TF
 
 ### `log_generator.py` & `metrics_generator.py`
 These provide deterministic "observations" for the LLM. If a service is marked DEGRADED, the `metrics_generator` artificially spikes the p99 latency and error rates in the JSON output, which the Agent's Scout module must read and interpret.
+To prevent the LLM from simply memorizing hardcoded log templates during training, `eval_mode` dynamically injects log jitter via `_NOISE_LOG_POOL`, randomizing string layouts while preserving semantic content.
 
 ---
 
@@ -31,7 +33,7 @@ These provide deterministic "observations" for the LLM. If a service is marked D
 This is the bridge between the infrastructure state machine and the Agent. It implements the standard RL `step()` function.
 - **Action Execution**: Routes the agent's 8 commands (e.g., `check_status`, `scale_service`) to the `ServiceGraph`.
 - **Time Cost**: Every action advances the `tick()` clock. A `diagnose` action takes 0 minutes, but a `rollback_deploy` takes 5 minutes, giving failure cascades time to trigger.
-- **Normalization**: The `max_total_reward` from the scenario configuration normalizes the final episode score perfectly between `0.0` and `1.0`.
+- **Normalization**: Automatically computes the `max_total_reward` via an analytical equation during `reset()` to ensure the final episode score is perfectly clamped between `0.0` and `1.0`.
 
 ---
 
@@ -61,6 +63,10 @@ Takes the expert trajectories and applies Supervised Fine-Tuning using **Unsloth
 The crown jewel. It utilizes `TRL GRPOTrainer` combined with Unsloth's `fast_inference=True` to share weights between generation and training.
 - **Memory Optimization**: By utilizing `adamw_8bit`, `r=32` LoRA, and strictly limiting `num_generations=4`, the entire GRPO loop is restricted to **~4.5GB VRAM**, allowing it to train natively on consumer GPUs (like an RTX 4050).
 - **Reward Functions**: Employs `format_reward_func` (verifying XML tag obedience) and `environment_reward_func` (spawning a cloned `IncidentEnvironment` to calculate the semantic TF-IDF score).
+- **Curriculum Scaling**: Integrated with `agent/curriculum.py` to scale scenario complexity from Easy to Hard progressively, preventing gradient collapse.
+
+### `benchmark.py` (Stage 4: Evaluation)
+Auto-Benchmark CLI to execute multi-model evaluations rapidly. Generates reproducible HTML performance reports placed in `docs/runs/`.
 
 ---
 

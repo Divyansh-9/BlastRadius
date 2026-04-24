@@ -161,10 +161,26 @@ docker build -t incident-response-env .
 docker run -p 7860:7860 incident-response-env
 
 # Test health
+# Test health
 curl http://localhost:7860/health
 
 # Access Interactive UI
 http://localhost:7860/ui
+
+### Auto-Benchmark CLI
+
+Evaluate agents automatically across 10 scenarios and generate reproducible HTML reports:
+
+```bash
+python agent/benchmark.py --models "meta/llama-3.1-8b-instruct" --episodes 5
+```
+
+### RL Training Pipeline (GRPO)
+
+The environment includes a complete Unsloth/TRL training pipeline that penalizes reward hacking and rewards causal chain consistency.
+
+```bash
+python agent/train_grpo.py --data sft_data/train.jsonl --output lora_grpo
 ```
 
 ### API Usage
@@ -227,14 +243,22 @@ incident_env/
 │       ├── log_generator.py     # Realistic log generation
 │       ├── metrics_generator.py # Dashboard-style metrics
 │       └── grader.py            # Causal chain evaluation + scoring
+agent/
+├── benchmark.py                 # Auto-Benchmark CLI
+├── curriculum.py                # Progressive difficulty scaler
+├── generate_sft_data.py         # SFT synthetic dataset builder
+├── orchestrator.py              # LangChain execution wrapper
+├── train_grpo.py                # GRPO RL Training pipeline
+└── train_sft.py                 # Cold-Start SFT training
 openenv.yaml                     # OpenEnv manifest (all 10 tasks)
 Dockerfile                       # Container for HF Spaces
 docker-compose.yml               # Full stack (server + agent) local run
 Dockerfile.agent                 # Agent-only container
 inference.py                     # Baseline LLM agent
+war_room_ui.py                   # Gradio telemetry UI
 requirements.txt
 tests/
-└── test_environment.py          # 45 tests covering all components
+└── test_environment.py          # Unit & E2E Test Suite
 ```
 
 ## 🔑 Environment Variables
