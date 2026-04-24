@@ -65,12 +65,12 @@ class RolloutStep:
     step_number: int
     role: str                          # "scout" or "commander"
     system_prompt: str
-    user_prompt: str
+    user_prompt: str                   # Fix #6: Store REAL prompts, not placeholders
     model_response: str
     parsed_action: Optional[Dict]      # The JSON action (commander only)
     reward: float                      # Reward from grader
     cumulative_reward: float
-    observation: Dict[str, Any]        # Raw env observation
+    observation: Dict[str, Any]        # Compact observation snapshot
     triage_report: str                 # Scout's output (for commander context)
 
 
@@ -82,6 +82,7 @@ class Rollout:
     final_score: float = 0.0
     total_steps: int = 0
     resolved: bool = False
+    truncated: bool = False            # Fix #8: distinguish timeout from resolution
 
 
 # ─────────────────────────────────────────────────────────────
@@ -102,6 +103,9 @@ def parse_action_json(text: str) -> Dict[str, Any]:
     - Raw JSON
     - JSON inside <action> tags
     - JSON inside markdown code blocks
+
+    Fix #5: Returns _parse_failure sentinel instead of silently defaulting
+    to check_status, so the grader can apply a negative signal.
     """
     # Try <action> tags first
     action_text = extract_between_tags(text, "<action>", "</action>")
@@ -129,7 +133,75 @@ def parse_action_json(text: str) -> Dict[str, Any]:
                 return json.loads(brace_match.group())
             except json.JSONDecodeError:
                 pass
-        return {"command": "check_status"}
+        # Fix #5: Return sentinel instead of silently succeeding
+        return {"command": "_parse_failure", "target": None}
+
+
+# ─────────────────────────────────────────────────────────────
+# Triage Quality Scorer (Fix #1: Decouple Scout reward)
+# ─────────────────────────────────────────────────────────────
+
+def score_triage(triage: str, observation: Dict[str, Any]) -> float:
+    """
+    Independent reward for the Scout's triage quality.
+    
+    Fix #1: The Scout must NOT receive the Commander's env reward.
+    Instead, we score the triage by checking whether it correctly
+    identifies unhealthy services by name.
+    """
+    services = observation.get("services_status", {})
+    triage_lower = triage.lower()
+    
+    # Count unhealthy services mentioned in the triage
+    unhealthy = [name for name, status in services.items()
+                 if str(status).upper() in ("DEGRADED", "DOWN")]
+    
+    if not unhealthy:
+        # All healthy — scout should say so; give small baseline
+        return 0.05
+    
+    hits = sum(1 for svc in unhealthy if svc.lower() in triage_lower)
+    coverage = hits / len(unhealthy)
+    
+    # Base reward: 0.0-0.15 based on coverage of unhealthy services
+    reward = 0.15 * coverage
+    
+    # Bonus for mentioning severity
+    severity = observation.get("incident_severity", "")
+    if severity and severity.lower() in triage_lower:
+        reward += 0.05
+    
+    return round(reward, 4)
+
+
+# ─────────────────────────────────────────────────────────────
+# Phase Heuristic (Fix #4: State-aware, not step-count-based)
+# ─────────────────────────────────────────────────────────────
+
+def get_phase(observation: Dict[str, Any], step_num: int) -> str:
+    """
+    Fix #4: Determine episode phase from env state, not just step count.
+    
+    Hard scenarios can require 10+ investigation steps. Telling the model
+    to DIAGNOSE at step 7 when it's only checked 2 services causes
+    premature action and grader penalties.
+    """
+    services = observation.get("services_status", {})
+    unhealthy_count = sum(
+        1 for v in services.values()
+        if str(v).upper() in ("DEGRADED", "DOWN")
+    )
+    
+    if unhealthy_count == 0:
+        return "🔴 FIX — All services show healthy. Submit final fix or verify resolution."
+    
+    if step_num <= 3 or unhealthy_count > 3:
+        return "🔍 INVESTIGATE — Understand the blast radius first. Check status, logs, metrics."
+    
+    if step_num <= 6:
+        return "🔍 DEEP INVESTIGATE — Narrow down the root cause. Check dependencies and logs of suspect services."
+    
+    return "⚠️ DIAGNOSE + FIX — Identify root cause and apply targeted remediation."
 
 
 # ─────────────────────────────────────────────────────────────
@@ -238,6 +310,36 @@ class MATPOOrchestrator:
                 return
         yield "\n[RATE LIMIT ERROR]\n"
 
+    # ── Shared Prompt Builders (Fix #7: Single source of truth) ──
+
+    def _build_scout_user_prompt(self, observation: Dict[str, Any], history: List[str]) -> str:
+        """Build the Scout's user prompt. Used by both run_episode and run_episode_stream."""
+        return f"""ENVIRONMENT OBSERVATION:
+Services: {json.dumps(observation.get('services_status', {}), indent=1)}
+Alerts: {json.dumps(observation.get('active_alerts', []))}
+Time Elapsed: {observation.get('time_elapsed_minutes', 0)} min
+Severity: {observation.get('incident_severity', 'unknown')}
+Output: {str(observation.get('output', ''))[:1200]}
+
+Recent History: {'; '.join(history[-5:]) if history else 'Episode start'}"""
+
+    def _build_commander_user_prompt(
+        self, triage: str, step_num: int, last_reward: float, 
+        history: List[str], observation: Dict[str, Any]
+    ) -> str:
+        """Build the Commander's user prompt. Used by both run_episode and run_episode_stream."""
+        phase = get_phase(observation, step_num)  # Fix #4: state-aware phase
+        return f"""Step {step_num}/25 | Last Reward: {last_reward:+.4f} | {phase}
+
+[SCOUT TRIAGE REPORT]
+{triage}
+
+[EPISODE HISTORY]
+{chr(10).join(history[-5:]) if history else 'No actions taken yet.'}
+
+Based on the Scout's triage and episode phase, choose your next action.
+Respond with <think>your reasoning</think> then <action>JSON</action>."""
+
     # ── Role Execution ───────────────────────────────────────
 
     def run_scout(self, observation: Dict[str, Any], history: List[str]) -> Tuple[str, str]:
@@ -245,15 +347,7 @@ class MATPOOrchestrator:
         ROLE A: Scout — reads raw JSON, outputs triage report.
         Returns: (full_response, triage_report)
         """
-        user_prompt = f"""ENVIRONMENT OBSERVATION:
-Services: {json.dumps(observation.get('services_status', {}), indent=1)}
-Alerts: {json.dumps(observation.get('active_alerts', []))}
-Time Elapsed: {observation.get('time_elapsed_minutes', 0)} min
-Severity: {observation.get('incident_severity', 'unknown')}
-Output: {str(observation.get('output', ''))[:1200]}
-
-Recent History: {'; '.join(history[-3:]) if history else 'Episode start'}"""
-
+        user_prompt = self._build_scout_user_prompt(observation, history)
         full_response = self._call_llm(SCOUT_SYSTEM_PROMPT, user_prompt)
 
         # Extract the triage report from between tags
@@ -270,32 +364,15 @@ Recent History: {'; '.join(history[-3:]) if history else 'Episode start'}"""
         step_num: int,
         last_reward: float,
         history: List[str],
+        observation: Dict[str, Any],
     ) -> Tuple[str, Dict[str, Any]]:
         """
         ROLE B: Commander — reads triage report + history, emits JSON action.
         Returns: (full_response, parsed_action_dict)
         """
-        # Phase urgency heuristic (guides the model's behavior)
-        if step_num <= 2:
-            phase = "🔍 INVESTIGATE — Build situational awareness first."
-        elif step_num <= 5:
-            phase = "🔍 DEEP INVESTIGATE — Check logs/dependencies of suspect services."
-        elif step_num <= 8:
-            phase = "⚠️ DIAGNOSE — Submit your root cause analysis NOW."
-        else:
-            phase = "🔴 FIX — Apply fixes immediately. Time is running out!"
-
-        user_prompt = f"""Step {step_num}/25 | Last Reward: {last_reward:+.4f} | {phase}
-
-[SCOUT TRIAGE REPORT]
-{triage_report}
-
-[EPISODE HISTORY]
-{chr(10).join(history[-5:]) if history else 'No actions taken yet.'}
-
-Based on the Scout's triage and episode phase, choose your next action.
-Respond with <think>your reasoning</think> then <action>JSON</action>."""
-
+        user_prompt = self._build_commander_user_prompt(
+            triage_report, step_num, last_reward, history, observation
+        )
         full_response = self._call_llm(COMMANDER_SYSTEM_PROMPT, user_prompt)
         action = parse_action_json(full_response)
 
@@ -338,14 +415,21 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
                 print(f"\n── Step {step_num}/{max_steps} ──")
 
             # ── ROLE A: Scout Triage ──
+            scout_user_prompt = self._build_scout_user_prompt(observation, history)
             scout_response, triage = self.run_scout(observation, history)
             if verbose:
                 print(f"  [SCOUT] {triage[:120]}...")
 
+            # Fix #1: Score the Scout's triage independently
+            scout_reward = score_triage(triage, observation)
+
             # ── ROLE B: Commander Decision ──
             last_reward = rollout.steps[-1].reward if rollout.steps else 0.0
+            cmdr_user_prompt = self._build_commander_user_prompt(
+                triage, step_num, last_reward, history, observation
+            )
             cmdr_response, action = self.run_commander(
-                triage, step_num, last_reward, history
+                triage, step_num, last_reward, history, observation
             )
             if verbose:
                 print(f"  [CMDR]  {json.dumps(action)}")
@@ -360,32 +444,33 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
             if verbose:
                 print(f"  [ENV]   reward={reward:+.4f}  cumulative={cumulative_reward:+.4f}  done={done}")
 
-            # ── Record Step ──
-            # We record BOTH the scout and commander calls as separate
-            # training examples. During GRPO, the model will be trained
-            # to produce better outputs for both roles.
+            # ── Record Steps ──
+            # Fix #1: Scout gets its own independent triage-quality reward
+            # Fix #6: Store REAL prompts, not "[raw observation]" placeholders
             scout_step = RolloutStep(
                 step_number=step_num,
                 role="scout",
                 system_prompt=SCOUT_SYSTEM_PROMPT,
-                user_prompt="[raw observation]",  # Truncated for storage
+                user_prompt=scout_user_prompt,
                 model_response=scout_response,
                 parsed_action=None,
-                reward=reward,  # Attribute env reward to both roles
+                reward=scout_reward,
                 cumulative_reward=cumulative_reward,
-                observation={},  # Don't store full obs to save space
+                observation={"services_status": observation.get("services_status", {}),
+                             "active_alerts": observation.get("active_alerts", [])},
                 triage_report=triage,
             )
             cmdr_step = RolloutStep(
                 step_number=step_num,
                 role="commander",
                 system_prompt=COMMANDER_SYSTEM_PROMPT,
-                user_prompt=f"[triage + history for step {step_num}]",
+                user_prompt=cmdr_user_prompt,
                 model_response=cmdr_response,
                 parsed_action=action,
                 reward=reward,
                 cumulative_reward=cumulative_reward,
-                observation={},
+                observation={"services_status": observation.get("services_status", {}),
+                             "active_alerts": observation.get("active_alerts", [])},
                 triage_report=triage,
             )
             rollout.steps.extend([scout_step, cmdr_step])
@@ -403,11 +488,13 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
         # ── Finalize ──
         rollout.final_score = cumulative_reward
         rollout.total_steps = len(history)
-        rollout.resolved = env_result.get("info", {}).get("is_resolved", False)
+        info = env_result.get("info", {})
+        rollout.resolved = info.get("is_resolved", False)
+        rollout.truncated = info.get("truncated", False)  # Fix #8
 
         if verbose:
             print(f"\n{'─'*60}")
-            print(f"  RESULT: score={rollout.final_score:.4f}  steps={rollout.total_steps}  resolved={rollout.resolved}")
+            print(f"  RESULT: score={rollout.final_score:.4f}  steps={rollout.total_steps}  resolved={rollout.resolved}  truncated={rollout.truncated}")
             print(f"{'─'*60}\n")
 
         return rollout
@@ -415,6 +502,7 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
     def run_episode_stream(self, task_id: str, max_steps: int = 25):
         """
         Generator for Gradio War Room UI. 
+        Fix #7: Uses shared prompt builders to avoid train/inference mismatch.
         Yields: (observation, scout_text_accum, cmdr_text_accum, last_reward, is_done)
         """
         history: List[str] = []
@@ -432,8 +520,8 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
             scout_log += f"\n\n{'='*20}\n🤖 STEP {step_num} | SCOUT\n{'='*20}\n"
             yield observation, scout_log, cmdr_log, cumulative_reward, False
 
-            # Scout Streaming
-            user_prompt = f"ENVIRONMENT OBSERVATION:\nServices: {json.dumps(observation.get('services_status', {}), indent=1)}\nAlerts: {json.dumps(observation.get('active_alerts', []))}\nTime Elapsed: {observation.get('time_elapsed_minutes', 0)} min\nSeverity: {observation.get('incident_severity', 'unknown')}\nOutput: {str(observation.get('output', ''))[:1200]}\n\nRecent History: {'; '.join(history[-3:]) if history else 'Episode start'}"
+            # Fix #7: Use shared prompt builder
+            user_prompt = self._build_scout_user_prompt(observation, history)
             scout_full = ""
             for chunk in self._call_llm_stream(SCOUT_SYSTEM_PROMPT, user_prompt):
                 scout_full += chunk
@@ -446,14 +534,11 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
             cmdr_log += f"\n\n{'='*20}\n🧠 STEP {step_num} | COMMANDER\n{'='*20}\n"
             yield observation, scout_log, cmdr_log, cumulative_reward, False
 
-            # Commander Streaming
-            last_reward = cumulative_reward # We track total internally
-            if step_num <= 2: phase = "🔍 INVESTIGATE"
-            elif step_num <= 5: phase = "🔍 DEEP INVESTIGATE"
-            elif step_num <= 8: phase = "⚠️ DIAGNOSE"
-            else: phase = "🔴 FIX"
-            
-            user_prompt = f"Step {step_num}/25 | {phase}\n\n[SCOUT TRIAGE REPORT]\n{triage}\n\n[EPISODE HISTORY]\n{chr(10).join(history[-5:]) if history else 'No actions taken yet.'}\n\nRespond with <think>your reasoning</think> then <action>JSON</action>."
+            # Fix #7: Use shared prompt builder for commander too
+            last_reward = cumulative_reward
+            user_prompt = self._build_commander_user_prompt(
+                triage, step_num, last_reward, history, observation
+            )
             cmdr_full = ""
             for chunk in self._call_llm_stream(COMMANDER_SYSTEM_PROMPT, user_prompt):
                 cmdr_full += chunk

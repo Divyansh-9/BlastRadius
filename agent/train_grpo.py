@@ -95,32 +95,40 @@ def format_reward_func(completions: List[str], role: List[str], **kwargs) -> Lis
 
 def environment_reward_func(completions: List[str], role: List[str], task_id: List[str], step: List[int], history_log: List[List[str]], **kwargs) -> List[float]:
     """
-    The main RL signal. We recreate the BlastRadius environment state 
-    for each prompt, apply the model's generated action, and return 
-    the exact TF-IDF / Anti-Cheat score from grader.py.
+    The main RL signal. For each generated completion, we:
+    1. Create a fresh IncidentEnvironment
+    2. Restore it to the exact step snapshot from the dataset
+    3. Parse and execute the model's generated action
+    4. Return the TF-IDF / Anti-Cheat score from grader.py
+    
+    Fix #2: Each of G=4 completions gets its OWN independent env copy
+    restored from the snapshot. The old approach of fast-forwarding time
+    produced wrong states because it skipped cascade rule evaluation.
     """
     rewards = []
     
-    # Instantiate a clean environment pool
-    env = IncidentEnvironment()
+    # Extract snapshots from kwargs if available
+    snapshots = kwargs.get("env_snapshot", [None] * len(completions))
     
-    for comp, current_role, tid, current_step, history in zip(completions, role, task_id, step, history_log):
-        # 1. Scout is evaluated on formatting only; environmental reward comes from Cmdr
+    for comp, current_role, tid, current_step, history, snapshot in zip(
+        completions, role, task_id, step, history_log, snapshots
+    ):
+        # 1. Scout is evaluated on formatting only; env reward comes from Cmdr
         if current_role == "scout":
-            rewards.append(0.0) # Format reward handles the scout's baseline
+            rewards.append(0.0)  # Format reward handles the scout's baseline
             continue
             
-        # 2. Recreate environment state
+        # 2. Create a fresh environment and restore snapshot
+        env = IncidentEnvironment()
         try:
-            env.reset(task_id=tid)
-            # Fast-forward time (we skip actual execution logic and just pump the tick)
-            # A true on-policy framework would run continuous episodes, but for
-            # offline GRPO we simulate the time elapsed based on the step number.
-            for _ in range(current_step - 1):
-                env.state.time_elapsed_minutes += 5
-                env.graph.tick(5)
+            if snapshot:
+                # Best case: we have a real snapshot from the rollout
+                env.restore_snapshot(snapshot)
+            else:
+                # Fallback: reset and fast-forward (less accurate but functional)
+                env.reset(task_id=tid)
         except Exception as e:
-            print(f"- Env reset failed: {e}")
+            print(f"- Env restore failed: {e}")
             rewards.append(0.0)
             continue
             

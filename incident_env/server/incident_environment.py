@@ -8,6 +8,7 @@ generation, and grading.
 
 from __future__ import annotations
 
+import copy
 import random
 import uuid
 import hashlib
@@ -76,6 +77,66 @@ class IncidentEnvironment:
             if target == obf:
                 return real
         return target
+
+    # -----------------------------------------------------------------
+    # Snapshot Support (Fix #2: GRPO environment cloning)
+    # -----------------------------------------------------------------
+
+    def save_snapshot(self) -> Dict[str, Any]:
+        """
+        Capture the full mutable state of the environment.
+        Used by GRPO to freeze state at step N, then restore it
+        independently for each of G=4 candidate completions.
+        """
+        # Use task_difficulty (e.g. "easy") which maps to SCENARIOS keys,
+        # NOT scenario_id (e.g. "easy_db_pool") which is internal.
+        return {
+            "task_id": self._state.task_difficulty if self._state else "easy",
+            "state": copy.deepcopy(asdict(self._state)),
+            "graph_snapshot": self._graph.save_snapshot() if self._graph else {},
+            "diagnosis_attempts": self._diagnosis_attempts,
+            "action_history": list(self._action_history),
+        }
+
+    def restore_snapshot(self, snapshot: Dict[str, Any]):
+        """
+        Restore environment to a previously saved snapshot.
+        The scenario/graph structure must already be initialized via reset().
+        """
+        # Restore scenario first
+        task_id = snapshot.get("task_id", "easy")
+        scenario_cls = SCENARIOS.get(task_id)
+        if scenario_cls is None:
+            raise ValueError(f"Cannot restore: unknown task_id '{task_id}'")
+
+        self._scenario = scenario_cls()
+        self._graph = self._scenario.build_service_graph()
+        self._eval_mode = False
+        self._obf_map = {}
+
+        # Restore graph mutable state
+        if self._graph and snapshot.get("graph_snapshot"):
+            self._graph.restore_snapshot(snapshot["graph_snapshot"])
+
+        # Restore grader
+        grading_config = self._scenario.get_grading_config()
+        self._grader = Grader(grading_config)
+
+        # Restore episode state
+        saved_state = snapshot.get("state", {})
+        self._state = IncidentState(
+            episode_id=saved_state.get("episode_id", str(uuid.uuid4())),
+            step_count=saved_state.get("step_count", 0),
+            scenario_id=saved_state.get("scenario_id", task_id),
+            task_difficulty=saved_state.get("task_difficulty", "easy"),
+            max_steps=saved_state.get("max_steps", 25),
+            total_reward=saved_state.get("total_reward", 0.0),
+            done=saved_state.get("done", False),
+            is_resolved=saved_state.get("is_resolved", False),
+        )
+
+        self._diagnosis_attempts = snapshot.get("diagnosis_attempts", 0)
+        self._action_history = list(snapshot.get("action_history", []))
 
     # -----------------------------------------------------------------
     # OpenEnv API: reset()
@@ -170,8 +231,25 @@ class IncidentEnvironment:
         if self._state.done:
             return self._error_response("Episode is already complete. Call reset() to start a new one.")
 
-        # Validate command
+        # Fix #5: Handle _parse_failure sentinel from parse_action_json
         command = action.command.lower().strip()
+        if command == "_parse_failure":
+            self._state.step_count += 1
+            obs = IncidentObservation(
+                output="ERROR: Agent produced unparseable output. No action taken.",
+                services_status=self._obfuscate(self._graph.get_status_summary()),
+                active_alerts=self._obfuscate(self._graph.get_active_alerts()),
+                time_elapsed_minutes=self._graph.time_minutes,
+                incident_severity=self._graph.get_incident_severity(),
+            )
+            return {
+                "observation": asdict(obs),
+                "reward": -0.05,
+                "done": False,
+                "info": {"error": "parse_failure", "step_reward": -0.05},
+            }
+
+        # Validate command
         if command not in VALID_COMMANDS:
             return self._error_response(
                 f"Unknown command '{command}'. Valid commands: {', '.join(sorted(VALID_COMMANDS))}"
@@ -259,7 +337,8 @@ class IncidentEnvironment:
             self._state.total_reward += damping
         self._action_history.append(action_key)
 
-        # Check if done
+        # Fix #8: Check if done — distinguish timeout from resolution
+        truncated = self._state.step_count >= self._state.max_steps and not all_resolved
         done = all_resolved or self._state.step_count >= self._state.max_steps or self._state.done
         self._state.done = done
         self._state.is_resolved = all_resolved
@@ -279,6 +358,8 @@ class IncidentEnvironment:
         info: Dict[str, Any] = {
             "step_reward": grade.reward,
             "reward_breakdown": grade.breakdown,
+            "is_resolved": all_resolved,
+            "truncated": truncated,
         }
         if done:
             final = self._grader.get_final_score()

@@ -117,6 +117,60 @@ class ServiceGraph:
                 svc.unhealthy_since_minute = 0
 
     # ---------------------------------------------------------------
+    # Snapshot Support (for GRPO offline evaluation)
+    # ---------------------------------------------------------------
+
+    def save_snapshot(self) -> Dict:
+        """
+        Serialize the full graph state into a plain dict.
+        Used by GRPO to freeze the environment at a specific step,
+        then restore it independently for each of G=4 completions.
+        """
+        return {
+            "services": {
+                name: {
+                    "status": svc.status.value,
+                    "current_metrics": copy.deepcopy(svc.current_metrics),
+                    "unhealthy_since_minute": svc.unhealthy_since_minute,
+                    "log_pattern": svc.log_pattern,
+                    "has_recent_deploy": svc.has_recent_deploy,
+                }
+                for name, svc in self._services.items()
+            },
+            "cascade_rules": [
+                {"source": r.source, "target": r.target, "triggered": r.triggered}
+                for r in self._cascade_rules
+            ],
+            "time_minutes": self._time_minutes,
+            "fix_history": copy.deepcopy(self._fix_history),
+            "damage_events": copy.deepcopy(self._damage_events),
+        }
+
+    def restore_snapshot(self, snapshot: Dict):
+        """
+        Restore graph state from a snapshot dict.
+        This must be called AFTER __init__ (i.e., the graph structure
+        already exists from the scenario). We only restore mutable state.
+        """
+        for name, svc_state in snapshot.get("services", {}).items():
+            svc = self._services.get(name)
+            if svc is None:
+                continue
+            svc.status = ServiceStatus(svc_state["status"])
+            svc.current_metrics = copy.deepcopy(svc_state["current_metrics"])
+            svc.unhealthy_since_minute = svc_state["unhealthy_since_minute"]
+            svc.log_pattern = svc_state["log_pattern"]
+            svc.has_recent_deploy = svc_state["has_recent_deploy"]
+
+        for i, rule_state in enumerate(snapshot.get("cascade_rules", [])):
+            if i < len(self._cascade_rules):
+                self._cascade_rules[i].triggered = rule_state["triggered"]
+
+        self._time_minutes = snapshot.get("time_minutes", 0)
+        self._fix_history = copy.deepcopy(snapshot.get("fix_history", []))
+        self._damage_events = copy.deepcopy(snapshot.get("damage_events", []))
+
+    # ---------------------------------------------------------------
     # Queries
     # ---------------------------------------------------------------
 
