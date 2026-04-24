@@ -286,6 +286,7 @@ class ServiceGraph:
             svc.unhealthy_since_minute = -1
             svc.log_pattern = "recovery"
             self._fix_history.append({"action": "restart", "target": name, "minute": self._time_minutes})
+            self._auto_recover_dependents()
             return f"✅ {svc.display_name} restarted successfully. Service is now healthy.", True
 
         # Restart doesn't fix root cause
@@ -308,6 +309,7 @@ class ServiceGraph:
             svc.unhealthy_since_minute = -1
             svc.log_pattern = "recovery"
             self._fix_history.append({"action": "restart", "target": name, "minute": self._time_minutes})
+            self._auto_recover_dependents()
             return (
                 f"✅ {svc.display_name} restarted successfully.\n"
                 f"All upstream dependencies are now healthy — service recovered."
@@ -352,6 +354,7 @@ class ServiceGraph:
             svc.has_recent_deploy = False
             svc.log_pattern = "rollback_success"
             self._fix_history.append({"action": "rollback", "target": name, "minute": self._time_minutes})
+            self._auto_recover_dependents()
             return (
                 f"✅ Deployment rolled back on {svc.display_name}.\n"
                 f"Reverted: {svc.deploy_version} → {svc.previous_version}\n"

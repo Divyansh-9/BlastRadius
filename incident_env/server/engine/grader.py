@@ -68,7 +68,7 @@ def _cosine_similarity(v1: Dict[str, float], v2: Dict[str, float]) -> float:
 def compute_chain_similarity(
     agent_chain: List[str],
     truth_chain: List[str],
-    similarity_threshold: float = 0.20,
+    similarity_threshold: float = 0.45,
 ) -> Tuple[float, int, int]:
     """
     Compare agent's causal chain against ground truth using TF-IDF
@@ -109,14 +109,17 @@ def compute_chain_similarity(
     matched_agent = set()
     matched_truth = set()
     matched_count = 0
+    weighted_score = 0.0
 
     for sim, ai, ti in similarities:
         if ai not in matched_agent and ti not in matched_truth:
             matched_agent.add(ai)
             matched_truth.add(ti)
+            position_penalty = 0.7 if abs(ai - ti) > 1 else 1.0
+            weighted_score += sim * position_penalty
             matched_count += 1
 
-    accuracy = matched_count / len(truth_chain)
+    accuracy = weighted_score / len(truth_chain)
     return accuracy, matched_count, len(truth_chain)
 
 
@@ -155,7 +158,7 @@ class RewardConfig:
     speed_bonus_max: float = 0.10
 
     # Causal chain similarity
-    chain_similarity_threshold: float = 0.20
+    chain_similarity_threshold: float = 0.45
 
 
 # Default config instance
@@ -185,6 +188,21 @@ class ScenarioGradingConfig:
     useful_investigation_targets: List[str] = field(default_factory=list)
     max_optimal_steps: int = 6
     max_total_reward: float = 1.0
+    speed_decay_window_multiplier: float = 1.5  # easy=1.5x, medium=2x, hard=2.5x
+
+    @classmethod
+    def compute_max_theoretical_reward(cls, config: ScenarioGradingConfig, rc: RewardConfig) -> float:
+        """What a perfect agent can score on this scenario."""
+        return (
+            rc.status_check_reward * min(2, rc.max_status_checks_rewarded)
+            + rc.useful_investigation * len(config.useful_investigation_targets)
+            + rc.root_cause_correct
+            + rc.causal_chain_max  # perfect chain
+            + rc.confidence_calibrated
+            + rc.correct_fix * len(config.correct_fix_actions)
+            + rc.resolution_bonus
+            + rc.speed_bonus_max
+        )
 
 
 class Grader:
@@ -215,6 +233,9 @@ class Grader:
         self._step_rewards: List[float] = []
         self._status_check_count: int = 0
         self._fix_attempts: Dict[str, int] = {}  # anti-cheat: track per-service
+        self._revision_used: bool = False
+        self._checked_dependencies: bool = False
+        self._last_diagnosis_confidence: float = 0.5
 
     def grade_step(
         self,
@@ -251,13 +272,19 @@ class Grader:
         rc = self._rc
 
         # ─── Investigation rewards ───
-        if command in ("check_logs", "check_metrics", "check_status"):
+        if command in ("check_logs", "check_metrics", "check_status", "check_dependencies"):
             if command == "check_status":
                 self._status_check_count += 1
                 if self._status_check_count <= rc.max_status_checks_rewarded:
                     reward += rc.status_check_reward
                     breakdown["status_check"] = rc.status_check_reward
                     feedback_parts.append("Good: Checking overall system status.")
+            elif command == "check_dependencies":
+                if not self._checked_dependencies:
+                    reward += 0.03  # small but positive signal
+                    breakdown["dependency_check"] = 0.03
+                    self._checked_dependencies = True
+                    feedback_parts.append("Good: Understanding the dependency graph is a smart first move.")
             elif target in self._config.useful_investigation_targets:
                 if target not in self._investigated_services:
                     reward += rc.useful_investigation
@@ -293,8 +320,10 @@ class Grader:
                 if target in self._fixes_applied:
                     feedback_parts.append(f"Wasted step: {target} is already healthy.")
                 else:
-                    reward += rc.wrong_fix
-                    breakdown["wrong_fix"] = rc.wrong_fix
+                    penalty_multiplier = 1.0 + max(0, self._last_diagnosis_confidence - 0.5)
+                    penalty = rc.wrong_fix * penalty_multiplier
+                    reward += penalty
+                    breakdown["wrong_fix"] = penalty
                     feedback_parts.append(f"Failed: {command} on {target} did not resolve the issue.")
 
             # Anti-cheat: penalize excessive fix attempts on same service
@@ -318,13 +347,14 @@ class Grader:
         if all_resolved:
             # Smooth linear speed bonus (not step function)
             optimal = self._config.max_optimal_steps
+            decay_end = optimal * getattr(self._config, 'speed_decay_window_multiplier', 2.0)
             if step_number <= optimal:
                 speed_bonus = rc.speed_bonus_max
-            elif step_number >= optimal * 2:
+            elif step_number >= decay_end:
                 speed_bonus = 0.0
             else:
                 # Linear interpolation: bonus decreases linearly from max to 0
-                progress = (step_number - optimal) / optimal
+                progress = (step_number - optimal) / (decay_end - optimal)
                 speed_bonus = round(rc.speed_bonus_max * (1.0 - progress), 4)
 
             reward += speed_bonus
@@ -345,17 +375,28 @@ class Grader:
 
     def _grade_diagnosis(self, params: Dict[str, Any]) -> tuple:
         """Grade a diagnosis submission with causal chain evaluation."""
+        if self._diagnosis_submitted:
+            if self._diagnosis_was_correct:
+                return 0.0, {}, "Diagnosis already correct. No change."
+            # Allow ONE revision: clear the flag and re-grade at 50% weight
+            if self._revision_used:
+                return self._rc.duplicate_diagnosis, {"duplicate_diagnosis": self._rc.duplicate_diagnosis}, "No more revisions."
+            self._revision_used = True
+            self._diagnosis_submitted = False  # allow re-grade
+            # Re-grade at 50% of full reward
+            r, b, f = self._grade_diagnosis_inner(params)
+            return r * 0.5, {k: v * 0.5 for k, v in b.items()}, f"[REVISED] {f}"
+            
+        r, b, f = self._grade_diagnosis_inner(params)
+        self._diagnosis_submitted = True
+        return r, b, f
+
+    def _grade_diagnosis_inner(self, params: Dict[str, Any]) -> tuple:
+        """Inner grading logic for diagnosis."""
         reward = 0.0
         breakdown = {}
         feedback_parts = []
         rc = self._rc
-
-        if self._diagnosis_submitted:
-            # Don't penalize re-submission of a CORRECT diagnosis
-            if self._diagnosis_was_correct:
-                return 0.0, {}, "Diagnosis already submitted (correct). No change."
-            return rc.duplicate_diagnosis, {"duplicate_diagnosis": rc.duplicate_diagnosis}, "Diagnosis already submitted."
-        self._diagnosis_submitted = True
 
         # Root cause identification
         agent_root_cause = params.get("root_cause", "")
@@ -395,6 +436,7 @@ class Grader:
             confidence = float(params.get("confidence", 0.5))
         except (TypeError, ValueError):
             confidence = 0.5
+        self._last_diagnosis_confidence = confidence
         actual_accuracy = 1.0 if agent_root_cause == self._config.root_cause_service else 0.0
         calibration_error = abs(confidence - actual_accuracy)
         if calibration_error < rc.confidence_calibration_tolerance:

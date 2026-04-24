@@ -143,11 +143,23 @@ _LOG_TEMPLATES: Dict[str, List[str]] = {
 }
 
 
+_NOISE_LOG_POOL: List[str] = [
+    "[{ts}] INFO  [{svc}] GC cycle completed: reclaimed 124MB | duration=12ms",
+    "[{ts}] DEBUG [{svc}] Cache hit rate: 94.2%",
+    "[{ts}] INFO  [{svc}] Updating internal routing table (0 changes)",
+    "[{ts}] DEBUG [{svc}] Checking feature flag updates from config server",
+    "[{ts}] INFO  [{svc}] Periodic sync job started",
+    "[{ts}] WARN  [{svc}] DeprecationWarning: Config format v1 is deprecated",
+    "[{ts}] ERROR [{svc}] Non-critical metric export failed: timeout",
+    "[{ts}] INFO  [{svc}] Refreshing STS credentials | expires in 12h",
+]
+
 def generate_logs(
     service: ServiceNode,
     env_time_minutes: int,
     num_entries: int = 8,
     base_time: datetime | None = None,
+    eval_mode: bool = False,
 ) -> str:
     """
     Generate realistic log entries for a service based on its current state.
@@ -176,6 +188,10 @@ def generate_logs(
         pattern = "down"
 
     templates = _LOG_TEMPLATES.get(pattern, _LOG_TEMPLATES["normal"])
+
+    # If eval_mode, shuffle templates and add noise to prevent exact string memorization
+    if eval_mode:
+        templates = list(templates) + random.sample(_NOISE_LOG_POOL, min(len(_NOISE_LOG_POOL), 3))
 
     entries = []
     for i in range(num_entries):

@@ -121,6 +121,8 @@ class IncidentEnvironment:
                         svc.current_metrics[key] = round(original * jitter, 2)
                 
         grading_config = self._scenario.get_grading_config()
+        from incident_env.server.engine.grader import DEFAULT_REWARD_CONFIG
+        grading_config.max_total_reward = type(grading_config).compute_max_theoretical_reward(grading_config, DEFAULT_REWARD_CONFIG)
         self._grader = Grader(grading_config)
 
         # Initialize state
@@ -199,14 +201,6 @@ class IncidentEnvironment:
         # Execute the command
         output, action_succeeded = self._execute_command(command, self._deobfuscate(action.target), action.parameters)
 
-        # Add cascade notifications to output
-        if cascades:
-            cascade_text = "\n\n📡 CASCADE ALERT:\n" + "\n".join(
-                f"  ⚠️ {c['target']} → {c['new_status']} (from {c['source']})"
-                for c in cascades
-            )
-            output += cascade_text
-            
         output = self._obfuscate(output)
 
         # Track action
@@ -271,6 +265,7 @@ class IncidentEnvironment:
             output=output,
             services_status=self._obfuscate(self._graph.get_status_summary()),
             active_alerts=self._obfuscate(self._graph.get_active_alerts()),
+            cascade_events=self._obfuscate(cascades),
             time_elapsed_minutes=self._graph.time_minutes,
             incident_severity=self._graph.get_incident_severity(),
             services_at_risk=self._obfuscate(self._graph.get_services_at_risk()),
@@ -372,7 +367,7 @@ class IncidentEnvironment:
                 f"ERROR: Unknown service '{target}'.\n"
                 f"Available services: {', '.join(self._graph.service_names())}"
             )
-        return generate_logs(svc, self._graph.time_minutes)
+        return generate_logs(svc, self._graph.time_minutes, eval_mode=self._eval_mode)
 
     def _cmd_check_metrics(self, target: str) -> str:
         """Show metrics dashboard for a specific service."""
