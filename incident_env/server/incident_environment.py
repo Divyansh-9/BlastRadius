@@ -63,7 +63,10 @@ class IncidentEnvironment:
             return text
             
         if isinstance(data, dict):
-            return {self._obf_map.get(k, k): v for k, v in data.items()}
+            return {
+                self._obf_map.get(k, k): self._obfuscate(v)  # Bug #7: recurse into values too
+                for k, v in data.items()
+            }
             
         if isinstance(data, list):
             return [self._obfuscate(item) for item in data]  # recurse into items as strings
@@ -94,6 +97,7 @@ class IncidentEnvironment:
             "task_id": self._state.task_difficulty if self._state else "easy",
             "state": copy.deepcopy(asdict(self._state)),
             "graph_snapshot": self._graph.save_snapshot() if self._graph else {},
+            "grader_snapshot": self._grader.save_snapshot() if self._grader else {},
             "diagnosis_attempts": self._diagnosis_attempts,
             "action_history": list(self._action_history),
         }
@@ -121,6 +125,9 @@ class IncidentEnvironment:
         # Restore grader
         grading_config = self._scenario.get_grading_config()
         self._grader = Grader(grading_config)
+        # Bug #4: Restore grader internal state (investigation, diagnosis, rewards, etc.)
+        if snapshot.get("grader_snapshot"):
+            self._grader.restore_snapshot(snapshot["grader_snapshot"])
 
         # Restore episode state
         saved_state = snapshot.get("state", {})
@@ -133,6 +140,8 @@ class IncidentEnvironment:
             total_reward=saved_state.get("total_reward", 0.0),
             done=saved_state.get("done", False),
             is_resolved=saved_state.get("is_resolved", False),
+            wrong_diagnoses=saved_state.get("wrong_diagnoses", 0),  # Bug #5: restore 3-strike counter
+            root_cause_identified=saved_state.get("root_cause_identified", False),
         )
 
         self._diagnosis_attempts = snapshot.get("diagnosis_attempts", 0)

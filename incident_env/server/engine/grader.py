@@ -149,7 +149,7 @@ class RewardConfig:
     speed_bonus_max: float = 0.10
 
     # Causal chain similarity
-    chain_similarity_threshold: float = 0.20
+    chain_similarity_threshold: float = 0.45
 
 
 # Default config instance
@@ -209,6 +209,37 @@ class Grader:
         self._step_rewards: List[float] = []
         self._status_check_count: int = 0
         self._fix_attempts: Dict[str, int] = {}  # anti-cheat: track per-service
+        self._revision_used: bool = False  # Bug #3: explicitly init for snapshot safety
+
+    # ── Snapshot Support (Bug #4: GRPO grader state cloning) ──
+
+    def save_snapshot(self) -> Dict:
+        """Serialize all mutable grader state for GRPO environment cloning."""
+        return {
+            "investigated": list(self._investigated_services),
+            "diagnosis_submitted": self._diagnosis_submitted,
+            "diagnosis_correct": self._diagnosis_was_correct,
+            "revision_used": self._revision_used,
+            "fixes_applied": list(self._fixes_applied),
+            "collateral_count": self._collateral_count,
+            "cumulative_reward": self._cumulative_reward,
+            "step_rewards": list(self._step_rewards),
+            "status_check_count": self._status_check_count,
+            "fix_attempts": dict(self._fix_attempts),
+        }
+
+    def restore_snapshot(self, snap: Dict):
+        """Restore grader state from a snapshot dict."""
+        self._investigated_services = set(snap.get("investigated", []))
+        self._diagnosis_submitted = snap.get("diagnosis_submitted", False)
+        self._diagnosis_was_correct = snap.get("diagnosis_correct", False)
+        self._revision_used = snap.get("revision_used", False)
+        self._fixes_applied = list(snap.get("fixes_applied", []))
+        self._collateral_count = snap.get("collateral_count", 0)
+        self._cumulative_reward = snap.get("cumulative_reward", 0.0)
+        self._step_rewards = list(snap.get("step_rewards", []))
+        self._status_check_count = snap.get("status_check_count", 0)
+        self._fix_attempts = dict(snap.get("fix_attempts", {}))
 
     def grade_step(
         self,
@@ -265,7 +296,10 @@ class Grader:
                     breakdown["useful_investigation"] = rc.useful_investigation
                     feedback_parts.append(f"Good: Investigating {target} is relevant.")
                     self._investigated_services.add(target)
-            else:
+                else:
+                    # Bug #6: Already investigated — neutral, not penalized
+                    feedback_parts.append(f"Already investigated {target}. No additional signal.")
+            elif target:  # Bug #6: Only penalize if a target was explicitly given
                 reward += rc.irrelevant_investigation
                 breakdown["irrelevant_investigation"] = rc.irrelevant_investigation
                 feedback_parts.append(f"Wasted time: {target} is not directly relevant.")
@@ -317,15 +351,18 @@ class Grader:
 
         # ─── All resolved bonus ───
         if all_resolved:
-            # Smooth linear speed bonus (not step function)
+            # Bug #8: Cap decay window to max_steps (25) so hard scenarios
+            # don't give free speed bonus that never reaches zero
             optimal = self._config.max_optimal_steps
+            max_steps = 25
+            decay_end = min(optimal * 2, max_steps)
             if step_number <= optimal:
                 speed_bonus = rc.speed_bonus_max
-            elif step_number >= optimal * 2:
+            elif step_number >= decay_end:
                 speed_bonus = 0.0
             else:
-                # Linear interpolation: bonus decreases linearly from max to 0
-                progress = (step_number - optimal) / optimal
+                # Linear interpolation: bonus decreases from max to 0
+                progress = (step_number - optimal) / (decay_end - optimal)
                 speed_bonus = round(rc.speed_bonus_max * (1.0 - progress), 4)
 
             reward += speed_bonus
