@@ -213,29 +213,6 @@ def build_dataset_for_grpo(file_path: str):
 
 
 # ─────────────────────────────────────────────────────────────
-# Callbacks and MLOps Hooks
-# ─────────────────────────────────────────────────────────────
-
-class WandbRewardCallback(TrainerCallback):
-    """Logs detailed reward metrics to WandB at each step."""
-    def on_step_end(self, args, state, control, **kwargs):
-        if not wandb or wandb.run is None:
-            return
-            
-        metrics = kwargs.get("metrics", {})
-        # GRPOTrainer logs rewards internally, we can extract them or 
-        # log additional custom metrics if passed via state.
-        
-        # We also want to log loss and step explicitly to wandb
-        if len(state.log_history) > 0:
-            last_log = state.log_history[-1]
-            wandb.log({
-                "step": state.global_step,
-                **{k: v for k, v in last_log.items() if isinstance(v, (int, float))}
-            })
-
-
-# ─────────────────────────────────────────────────────────────
 # Training Routine
 # ─────────────────────────────────────────────────────────────
 
@@ -251,6 +228,7 @@ def main():
     parser.add_argument("--hub-model-id", default=os.environ.get("HUB_MODEL_ID", ""), help="Hugging Face repo ID (e.g. your-org/blastradius-checkpoint)")
     parser.add_argument("--wandb-project", default="blastradius-grpo", help="WandB project name")
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""), help="WandB team entity")
+    parser.add_argument("--max-runtime-hours", type=float, default=2.0, help="Wall-clock limit to prevent runaway jobs")
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
@@ -336,6 +314,12 @@ def main():
 
     signal.signal(signal.SIGTERM, preemption_handler)
     signal.signal(signal.SIGINT, preemption_handler)
+    signal.signal(signal.SIGALRM, preemption_handler)
+    
+    # Set wall-clock limit to prevent runaway jobs draining HF credits
+    max_seconds = int(args.max_runtime_hours * 3600)
+    print(f"⏰ Setting wall-clock alarm for {max_seconds} seconds ({args.max_runtime_hours} hours)")
+    signal.alarm(max_seconds)
 
     # Initialize WandB
     if wandb and args.wandb_entity:
@@ -379,6 +363,7 @@ def main():
         # Checkpointing & Hub (Async uploads to prevent dead GPU time)
         save_steps=200,
         save_strategy="steps",
+        save_total_limit=2,
         push_to_hub=bool(args.hub_model_id),
         hub_model_id=args.hub_model_id if args.hub_model_id else None,
         hub_strategy="checkpoint",  # Pushes asynchronously automatically!
@@ -397,7 +382,6 @@ def main():
         reward_funcs=[format_reward_func, environment_reward_func],
         args=training_args,
         train_dataset=dataset,
-        callbacks=[WandbRewardCallback()] if wandb and args.wandb_entity else None,
     )
     
     _trainer_for_emergency_save = trainer
