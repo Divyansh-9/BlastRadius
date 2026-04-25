@@ -27,6 +27,7 @@ import json
 import concurrent.futures
 import signal
 import time
+import threading
 from typing import List
 from pathlib import Path
 
@@ -164,22 +165,20 @@ _env_executor = None
 
 def environment_reward_func(completions: List[str], role: List[str], task_id: List[str], step: List[int], history_log: List[List[str]], **kwargs) -> List[float]:
     """
-    The main RL signal. Uses ThreadPoolExecutor to evaluate completions in
-    parallel.
-
-    CRITICAL: We use ThreadPoolExecutor (NOT ProcessPoolExecutor) because:
-    - Inside HF Jobs (Kubernetes), fork() after CUDA init is undefined behavior
-      and causes deadlocks (CUDA internal state is not fork-safe).
-    - env.step() is I/O and Python-logic bound, not pure CPU — threads are fine.
-    - ProcessPoolExecutor with 'spawn' start method is slower and adds ~2s
-      per reward batch due to process startup overhead.
+    The main RL signal. Uses ProcessPoolExecutor to evaluate all generated
+    completions in parallel, preventing the Python environment from bottlenecking
+    the GPU.
     """
     snapshots = kwargs.get("env_snapshot", [None] * len(completions))
-
+    
     global _env_executor
     if _env_executor is None:
-        max_workers = min(8, os.cpu_count() or 4)
-        _env_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        max_workers = os.cpu_count() or 4
+        # BUG #3 FIX: Inside HF Jobs (K8s), fork() after CUDA init deadlocks.
+        # ProcessPoolExecutor uses fork by default on Linux — this hangs silently.
+        # ThreadPoolExecutor is safe: env.step() releases the GIL internally
+        # and the thread pool doesn't fork a new process.
+        _env_executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max_workers))
 
     futures = [
         _env_executor.submit(evaluate_single_env, comp, current_role, tid, snapshot)
@@ -334,44 +333,53 @@ def main():
     _args_for_emergency_save = args
 
     def preemption_handler(signum, frame):
-        """Called on SIGTERM (30s warning before eviction) — save NOW and exit."""
+        """Called 30 seconds before Spot Instance dies — force save NOW"""
         print("\n⚠️  SIGTERM received — emergency checkpoint save to Hub", flush=True)
         step = _trainer_for_emergency_save.state.global_step if _trainer_for_emergency_save else "unknown"
+        
+        # Save locally
         emergency_dir = "/tmp/emergency-checkpoint"
-        try:
-            _model_for_emergency_save.save_pretrained(emergency_dir)
-            if _args_for_emergency_save.hub_model_id:
-                from huggingface_hub import HfApi  # type: ignore
-                HfApi().upload_folder(
+        _model_for_emergency_save.save_pretrained(emergency_dir)
+        
+        # Push to hub (blocking, because we are about to die)
+        if _args_for_emergency_save.hub_model_id:
+            try:
+                from huggingface_hub import HfApi # type: ignore
+                api = HfApi()
+                api.upload_folder(
                     folder_path=emergency_dir,
                     repo_id=_args_for_emergency_save.hub_model_id,
                     commit_message=f"EMERGENCY-step-{step}",
                     blocking=True,
                 )
                 print(f"✅ Emergency checkpoint saved to Hub at step {step}")
-            else:
-                print("⚠️ No --hub-model-id: emergency save only in /tmp")
-        except Exception as e:
-            print(f"❌ Emergency save failed: {e}")
+            except Exception as e:
+                print(f"❌ Failed to upload emergency checkpoint: {e}")
+        else:
+            print("⚠️ No --hub-model-id provided, emergency save only exists in /tmp")
+            
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, preemption_handler)
     signal.signal(signal.SIGINT, preemption_handler)
+    # BUG #4 FIX: SIGALRM + signal.alarm() deadlocks when GRPO worker threads hold locks.
+    # Replaced with a daemon watchdog thread that calls trainer.control.should_training_stop
+    # — this is the safe, TRL-idiomatic way to stop training gracefully.
 
-    # ── Wall-clock watchdog (daemon thread, NOT signal.alarm) ──────────────────
-    # signal.alarm() + SIGALRM deadlocks when the main thread holds a torch/CUDA
-    # lock. A daemon thread gracefully sets should_training_stop instead.
-    import threading
     max_seconds = int(args.max_runtime_hours * 3600)
-    print(f"⏰ Wall-clock watchdog set for {max_seconds}s ({args.max_runtime_hours}h)")
+    print(f"Starting wall-clock watchdog: {args.max_runtime_hours}h limit ({max_seconds}s)")
 
     def _wall_clock_watchdog():
         time.sleep(max_seconds)
-        print("⏰ Wall-clock limit reached — signalling trainer to stop gracefully", flush=True)
+        print(f"\nWall-clock limit ({args.max_runtime_hours}h) reached — stopping training gracefully.", flush=True)
         if _trainer_for_emergency_save is not None:
+            # Graceful TRL stop: finishes the current step then saves
             _trainer_for_emergency_save.control.should_training_stop = True
+        else:
+            # Trainer hasn't started yet — trigger emergency save directly
+            preemption_handler(None, None)
 
-    threading.Thread(target=_wall_clock_watchdog, daemon=True, name="wall-clock-watchdog").start()
+    threading.Thread(target=_wall_clock_watchdog, daemon=True, name="WallClockWatchdog").start()
 
     # Initialize WandB
     if wandb and args.wandb_entity:
@@ -454,31 +462,31 @@ def main():
     else:
         print("VRAM usage should peak at ~4.5GB. Generating rollout batches...")
     
-    # Auto-recover from Hub ONLY if it has a valid TRL checkpoint
-    trainer_state_path = Path(args.output) / "trainer_state.json"
-    if args.hub_model_id and not trainer_state_path.exists():
-        print("No local checkpoint — checking Hub for valid TRL checkpoint...")
+    # BUG #8 FIX: Auto-recover from Hub if fresh container (no local checkpoint).
+    # Wrapped in try/except: a missing or incomplete Hub repo should not crash the job.
+    if args.hub_model_id and not os.path.exists(args.output):
+        print("Fresh container detected -- pulling checkpoint from Hub...")
         try:
-            from huggingface_hub import snapshot_download, list_repo_files  # type: ignore
-            hub_files = list(list_repo_files(args.hub_model_id))
-            if "trainer_state.json" in hub_files:
-                print("✅ Hub has trainer_state.json — downloading for resume")
-                snapshot_download(repo_id=args.hub_model_id, local_dir=args.output)
-            else:
-                print("⚠️  Hub repo exists but has no trainer_state.json — starting fresh")
-        except Exception as e:
-            print(f"⚠️  Hub check failed ({e}) — starting fresh")
+            from huggingface_hub import snapshot_download  # type: ignore
+            snapshot_download(repo_id=args.hub_model_id, local_dir=args.output)
+        except Exception as _hub_err:
+            print(f"Hub download failed ({_hub_err}) — starting fresh from base model.")
 
-    resume = trainer_state_path.exists()
-    if resume:
-        import json as _json
+    # Check for trainer_state.json, not just dir existence.
+    # A raw emergency save (weights only, no TRL metadata) will crash
+    # resume_from_checkpoint=True with a checkpoint metadata KeyError.
+    trainer_state_path = Path(args.output) / "trainer_state.json"
+    resume = False
+    if trainer_state_path.exists():
         try:
-            state = _json.load(open(trainer_state_path))
-            print(f"✅ Resuming from TRL checkpoint at step {state.get('global_step', '?')}")
+            import json as _json
+            _state = _json.load(open(trainer_state_path))
+            resume = True
+            print(f"Resuming from valid TRL checkpoint at step {_state.get('global_step', '?')}")
         except Exception:
-            print("✅ Resuming from checkpoint (trainer_state.json found)")
-    else:
-        print("🆕 Starting fresh GRPO training run")
+            print("trainer_state.json unreadable — starting fresh (not resuming).")
+    elif os.path.exists(args.output):
+        print("Output dir exists but no trainer_state.json found — starting fresh (not resuming).")
     trainer.train(resume_from_checkpoint=resume)
 
     # 5. Save Finished Model
