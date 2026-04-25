@@ -53,7 +53,7 @@ class TestModels:
         obs = IncidentObservation()
         assert obs.output == ""
         assert obs.services_status == {}
-        assert obs.incident_severity == "P2"
+        assert obs.incident_severity == ""
 
     def test_state_defaults(self):
         state = IncidentState()

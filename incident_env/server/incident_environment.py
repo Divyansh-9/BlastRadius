@@ -66,7 +66,7 @@ class IncidentEnvironment:
             return {self._obf_map.get(k, k): v for k, v in data.items()}
             
         if isinstance(data, list):
-            return [self._obf_map.get(i, i) for i in data]
+            return [self._obfuscate(item) for item in data]  # recurse into items as strings
             
         return data
 
@@ -259,13 +259,6 @@ class IncidentEnvironment:
         time_cost = ACTION_TIME_COSTS.get(command, 1)
         if time_cost > 0:
             cascades = self._graph.tick(time_cost)
-            if cascades:
-                # Failures spread! Note this in the response.
-                cascade_msgs = [
-                    f"⚠️ While you were acting: {c['target']} entered {c['new_status']} state "
-                    f"(cascaded from {c['source']})"
-                    for c in cascades
-                ]
         else:
             cascades = []
 
@@ -311,16 +304,20 @@ class IncidentEnvironment:
             collateral_damage=self._state.collateral_damage,
         )
 
+        # Sync grader's cumulative reward FIRST (Bug #3 fix)
         self._state.total_reward = self._grader.cumulative_reward
         self._state.step_rewards = self._grader.step_rewards
         
+        # Set root_cause_identified when grader confirms correct diagnosis (Bug #7 fix)
+        if "root_cause_correct" in grade.breakdown:
+            self._state.root_cause_identified = True
+
         # Anti-cheat: diagnosis penalty escalation
+        # These mutations happen AFTER the grader sync, so they stick (Bug #3 fix)
         if command == "diagnose":
             self._diagnosis_attempts += 1
-            # Only count wrong diagnoses (not duplicate or correct re-submissions)
             if "root_cause_wrong" in grade.breakdown:
                 self._state.wrong_diagnoses += 1
-                # Exponential penalty: -0.03, -0.06, -0.12, ...
                 if self._state.wrong_diagnoses > 1:
                     escalation = -0.03 * (2 ** (self._state.wrong_diagnoses - 2))
                     self._state.total_reward += escalation
@@ -498,7 +495,11 @@ class IncidentEnvironment:
 
     def _error_response(self, message: str) -> Dict[str, Any]:
         """Return an error response."""
-        obs = IncidentObservation(output=f"ERROR: {message}")
+        severity = self._graph.get_incident_severity() if self._graph else ""
+        obs = IncidentObservation(
+            output=f"ERROR: {message}",
+            incident_severity=severity,
+        )
         return {
             "observation": asdict(obs),
             "reward": 0.0,

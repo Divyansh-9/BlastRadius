@@ -245,13 +245,20 @@ class Grader:
         rc = self._rc
 
         # ─── Investigation rewards ───
-        if command in ("check_logs", "check_metrics", "check_status"):
+        if command in ("check_logs", "check_metrics", "check_status", "check_dependencies"):
             if command == "check_status":
                 self._status_check_count += 1
                 if self._status_check_count <= rc.max_status_checks_rewarded:
                     reward += rc.status_check_reward
                     breakdown["status_check"] = rc.status_check_reward
                     feedback_parts.append("Good: Checking overall system status.")
+            elif command == "check_dependencies":
+                # Reward once for checking dependency graph
+                if "_deps_checked" not in self._investigated_services:
+                    reward += rc.status_check_reward
+                    breakdown["dependency_check"] = rc.status_check_reward
+                    feedback_parts.append("Good: Understanding service dependencies.")
+                    self._investigated_services.add("_deps_checked")
             elif target in self._config.useful_investigation_targets:
                 if target not in self._investigated_services:
                     reward += rc.useful_investigation
@@ -348,7 +355,22 @@ class Grader:
             # Don't penalize re-submission of a CORRECT diagnosis
             if self._diagnosis_was_correct:
                 return 0.0, {}, "Diagnosis already submitted (correct). No change."
-            return rc.duplicate_diagnosis, {"duplicate_diagnosis": rc.duplicate_diagnosis}, "Diagnosis already submitted."
+            # Bug #2 fix: Allow one revision attempt at 50% reward weight
+            if not getattr(self, '_revision_used', False):
+                self._revision_used = True
+                self._diagnosis_submitted = False  # Reset to allow re-grade
+                r, b, f = self._grade_diagnosis_inner(params)
+                return round(r * 0.5, 4), {k: round(v * 0.5, 4) for k, v in b.items()}, f"[REVISED x0.5] {f}"
+            return rc.duplicate_diagnosis, {"duplicate_diagnosis": rc.duplicate_diagnosis}, "No more revisions allowed."
+        return self._grade_diagnosis_inner(params)
+
+    def _grade_diagnosis_inner(self, params: Dict[str, Any]) -> tuple:
+        """Core diagnosis grading logic. Separated for revision support."""
+        reward = 0.0
+        breakdown = {}
+        feedback_parts = []
+        rc = self._rc
+
         self._diagnosis_submitted = True
 
         # Root cause identification
