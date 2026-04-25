@@ -224,7 +224,7 @@ class MATPOOrchestrator:
         self,
         api_base: str = "http://localhost:8000/v1",
         api_key: str = "not-needed",
-        model_name: str = "Qwen/Qwen2.5-1.5B-Instruct",
+        model_name: str = "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
         env_base_url: str = "http://localhost:7860",
         temperature: float = 0.3,
         max_tokens: int = 512,
@@ -583,7 +583,7 @@ def main():
     parser = argparse.ArgumentParser(description="MATPO Orchestrator for BlastRadius")
     parser.add_argument("--task", default="easy", help="Scenario task_id (easy, medium, hard, etc.)")
     parser.add_argument("--endpoint", default=os.environ.get("API_BASE_URL", "http://localhost:8000/v1"))
-    parser.add_argument("--model", default=os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct"))
+    parser.add_argument("--model", default=os.environ.get("MODEL_NAME", "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"))
     parser.add_argument("--env-url", default=os.environ.get("ENV_BASE_URL", "http://localhost:7860"))
     parser.add_argument("--api-key", default=os.environ.get("HF_TOKEN", "not-needed"))
     parser.add_argument("--save-rollouts", default=None, help="Directory to save rollout trajectories")

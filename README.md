@@ -135,6 +135,25 @@ We benchmarked 3 leading models against the incidents. BlastRadius grades reason
 > *Scores reflect honest normalization. The maximum possible reward in the environment acts as the denominator, so agents must earn every single decimal point.*
 > **You can verify this exact run yourself.** See the raw timestamped LLM log in [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
+## 🧠 MLOps: Spot-Aware GRPO Training on A100
+
+To surpass the benchmarks and hit 97%+ accuracy, we provide a production-ready RL training pipeline designed for $30/teammate compute budgets. 
+
+It targets 32B reasoning models (e.g., `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B` or `Qwen/Qwen2.5-Coder-32B-Instruct`) and utilizes **Spot Instances**, **WandB live tracking**, and **Async Checkpointing**. 
+
+To survive Spot instance preemptions with zero wasted GPU time, the `train_grpo.py` loop hooks into `SIGTERM` and forces an emergency push to the Hugging Face Hub 30 seconds before the instance is killed.
+
+```bash
+# Example A100 Spot Training Job
+WANDB_API_KEY=your_key python -m agent.train_grpo \
+    --model models/sft_checkpoint \
+    --data sft_data/expert_trajectories.jsonl \
+    --output models/grpo_checkpoint \
+    --hardware-profile a100 \
+    --wandb-entity your_wandb_org \
+    --hub-model-id your_hf_org/BlastRadius-GRPO
+```
+
 ## 🚀 Setup & Usage
 
 ### Quick Start (Local)

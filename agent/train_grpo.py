@@ -23,11 +23,18 @@ import argparse
 import json
 import re
 import concurrent.futures
+import signal
+import numpy as np
 from typing import List, Dict, Any
 from pathlib import Path
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
 from datasets import load_dataset
-from transformers import TrainingArguments
+from transformers import TrainingArguments, TrainerCallback
 
 try:
     from unsloth import FastLanguageModel, PatchFastRL, is_bfloat16_supported
@@ -192,6 +199,29 @@ def build_dataset_for_grpo(file_path: str):
 
 
 # ─────────────────────────────────────────────────────────────
+# Callbacks and MLOps Hooks
+# ─────────────────────────────────────────────────────────────
+
+class WandbRewardCallback(TrainerCallback):
+    """Logs detailed reward metrics to WandB at each step."""
+    def on_step_end(self, args, state, control, **kwargs):
+        if not wandb or wandb.run is None:
+            return
+            
+        metrics = kwargs.get("metrics", {})
+        # GRPOTrainer logs rewards internally, we can extract them or 
+        # log additional custom metrics if passed via state.
+        
+        # We also want to log loss and step explicitly to wandb
+        if len(state.log_history) > 0:
+            last_log = state.log_history[-1]
+            wandb.log({
+                "step": state.global_step,
+                **{k: v for k, v in last_log.items() if isinstance(v, (int, float))}
+            })
+
+
+# ─────────────────────────────────────────────────────────────
 # Training Routine
 # ─────────────────────────────────────────────────────────────
 
@@ -202,6 +232,11 @@ def main():
     parser.add_argument("--data", default="sft_data/expert_trajectories.jsonl", help="Path to offline rollouts")
     parser.add_argument("--output", default="models/grpo_checkpoint", help="Output directory")
     parser.add_argument("--hardware-profile", choices=["6gb", "a10", "a100"], default="6gb", help="Hardware scaling profile")
+    
+    # MLOps arguments
+    parser.add_argument("--hub-model-id", default=os.environ.get("HUB_MODEL_ID", ""), help="Hugging Face repo ID (e.g. your-org/blastradius-checkpoint)")
+    parser.add_argument("--wandb-project", default="blastradius-grpo", help="WandB project name")
+    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""), help="WandB team entity")
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
@@ -251,6 +286,57 @@ def main():
         random_state=3407,
     )
 
+    # Global variables for the signal handler to access
+    global _model_for_emergency_save, _trainer_for_emergency_save, _args_for_emergency_save
+    _model_for_emergency_save = model
+    _trainer_for_emergency_save = None
+    _args_for_emergency_save = args
+
+    def preemption_handler(signum, frame):
+        """Called 30 seconds before Spot Instance dies — force save NOW"""
+        print("\n⚠️  SIGTERM received — emergency checkpoint save to Hub", flush=True)
+        step = _trainer_for_emergency_save.state.global_step if _trainer_for_emergency_save else "unknown"
+        
+        # Save locally
+        emergency_dir = "/tmp/emergency-checkpoint"
+        _model_for_emergency_save.save_pretrained(emergency_dir)
+        
+        # Push to hub (blocking, because we are about to die)
+        if _args_for_emergency_save.hub_model_id:
+            try:
+                from huggingface_hub import HfApi
+                api = HfApi()
+                api.upload_folder(
+                    folder_path=emergency_dir,
+                    repo_id=_args_for_emergency_save.hub_model_id,
+                    commit_message=f"EMERGENCY-step-{step}",
+                    blocking=True,
+                )
+                print(f"✅ Emergency checkpoint saved to Hub at step {step}")
+            except Exception as e:
+                print(f"❌ Failed to upload emergency checkpoint: {e}")
+        else:
+            print("⚠️ No --hub-model-id provided, emergency save only exists in /tmp")
+            
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, preemption_handler)
+    signal.signal(signal.SIGINT, preemption_handler)
+
+    # Initialize WandB
+    if wandb and args.wandb_entity:
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            config={
+                "model": args.model,
+                "hardware_profile": args.hardware_profile,
+                "num_generations": num_generations,
+                "batch_size": per_device_train_batch_size,
+                "kl_coeff": 0.04,
+            }
+        )
+
     # 3. Configure GRPOTrainer (Strict memory constraints)
     training_args = GRPOConfig(
         use_vllm=True,                          # Leverage integrated vLLM
@@ -276,6 +362,14 @@ def main():
         # KL Divergence constraints to prevent reward hacking
         beta=0.04,
         
+        # Checkpointing & Hub (Async uploads to prevent dead GPU time)
+        save_steps=200,
+        save_strategy="steps",
+        push_to_hub=bool(args.hub_model_id),
+        hub_model_id=args.hub_model_id if args.hub_model_id else None,
+        hub_strategy="checkpoint",  # Pushes asynchronously automatically!
+        report_to="wandb" if wandb and args.wandb_entity else "none",
+        
         # Ensure BFloat16 if supported
         bf16=is_bfloat16_supported(),
         fp16=not is_bfloat16_supported(),
@@ -289,11 +383,17 @@ def main():
         reward_funcs=[format_reward_func, environment_reward_func],
         args=training_args,
         train_dataset=dataset,
+        callbacks=[WandbRewardCallback()] if wandb and args.wandb_entity else None,
     )
+    
+    _trainer_for_emergency_save = trainer
 
     print("\nStarting GRPO Training...")
     print("VRAM usage should peak at ~4.5GB. Generating rollout batches...")
-    trainer.train()
+    
+    # Use resume_from_checkpoint if we have a hub ID and want to continue
+    resume = bool(args.hub_model_id) 
+    trainer.train(resume_from_checkpoint=resume if os.path.exists(args.output) else False)
 
     # 5. Save Finished Model
     print(f"\nTraining Complete. Saving to {args.output}")

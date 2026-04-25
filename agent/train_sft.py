@@ -30,7 +30,7 @@ except ImportError:
 def main():
     parser = argparse.ArgumentParser(description="Cold-Start SFT Training")
     parser.add_argument("--data", default="sft_data/expert_trajectories.jsonl", help="Path to jsonl trajectories")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct", help="Base model")
+    parser.add_argument("--model", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B", help="Base model")
     parser.add_argument("--output", default="models/sft_checkpoint", help="Output directory")
     args = parser.parse_args()
 
