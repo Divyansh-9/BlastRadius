@@ -242,6 +242,7 @@ def main():
     parser.add_argument("--wandb-project", default="blastradius-grpo", help="WandB project name")
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""), help="WandB team entity")
     parser.add_argument("--max-runtime-hours", type=float, default=2.0, help="Wall-clock limit")
+    parser.add_argument("--max-steps", type=int, default=-1, help="Hard step cap (-1 = use num_train_epochs)")
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
@@ -257,28 +258,32 @@ def main():
 
     if args.hardware_profile == "h200":
         load_in_4bit = False
-        num_generations = 16
+        num_generations = 8          # halved from 16 — cuts per-step time ~50%
         per_device_train_batch_size = 4
         gradient_accumulation_steps = 4
         vllm_gpu_memory_utilization = 0.50 # H200 has 141GB, conservative vllm ratio
+        is_bf16 = True
     elif args.hardware_profile == "a100":
         load_in_4bit = False
         num_generations = 16
         per_device_train_batch_size = 4
         gradient_accumulation_steps = 2
         vllm_gpu_memory_utilization = 0.70
+        is_bf16 = True
     elif args.hardware_profile == "a10":
         load_in_4bit = True
         num_generations = 8
         per_device_train_batch_size = 2
         gradient_accumulation_steps = 2
         vllm_gpu_memory_utilization = 0.60
+        is_bf16 = False
     else: # 6gb
         load_in_4bit = True
         num_generations = 4
         per_device_train_batch_size = 1
         gradient_accumulation_steps = 4
         vllm_gpu_memory_utilization = 0.50
+        is_bf16 = False
 
     # 3. Model Loading
     max_seq_length = 2048
@@ -380,6 +385,8 @@ def main():
     # 4. GRPO Configuration
     # trl==0.13.0 GRPOConfig does NOT support vllm_device / vllm_gpu_memory_utilization.
     # Those were added in trl>=0.15. Only pass use_vllm (bool).
+    # max_steps=-1 means "use num_train_epochs" (TRL default behaviour).
+    _max_steps = args.max_steps if args.max_steps > 0 else -1
     training_args = GRPOConfig(
         use_vllm=args.use_vllm,
         num_generations=num_generations,
@@ -389,11 +396,12 @@ def main():
         gradient_accumulation_steps=gradient_accumulation_steps,
         learning_rate=1e-6,
         optim="adamw_torch_fused",
-        num_train_epochs=2,
+        num_train_epochs=1,       # 1 epoch: halves wall-clock vs 2 epochs
+        max_steps=_max_steps,
         logging_steps=5,
         output_dir=args.output,
         beta=0.1,
-        save_steps=200,
+        save_steps=50,
         save_strategy="steps",
         save_total_limit=2,
         push_to_hub=bool(args.hub_model_id),

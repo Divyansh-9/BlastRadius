@@ -41,7 +41,7 @@ WANDB_ENTITY  = os.environ.get("WANDB_ENTITY", "")
 HUB_MODEL_ID  = os.environ["HUB_MODEL_ID"]
 
 FLAVOR       = os.environ.get("HF_JOB_FLAVOR", "h200")
-TIMEOUT      = os.environ.get("HF_JOB_TIMEOUT", "4h")
+TIMEOUT      = os.environ.get("HF_JOB_TIMEOUT", "2h")
 DOCKER_IMAGE = "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel"
 
 # ── Ensure Hub repo exists so GRPO can push ──────────────────────────────────
@@ -174,7 +174,7 @@ PULL_SFT
 echo "==> Validating downloaded SFT checkpoint"
 python3 -m agent.validate_save --model models/sft_checkpoint
 
-echo "==> Stage 3: GRPO RL Training"
+echo "==> Stage 3: GRPO RL Training (hackathon-fast: 300 steps, 8 generations)"
 python3 -u -m agent.train_grpo \\
     --model models/sft_checkpoint \\
     --data sft_data/expert_trajectories.jsonl \\
@@ -182,7 +182,8 @@ python3 -u -m agent.train_grpo \\
     --hardware-profile h200 \\
     --wandb-project {WANDB_PROJECT} \\
     --hub-model-id {HUB_MODEL_ID} \\
-    --max-runtime-hours 3.5
+    --max-steps 300 \\
+    --max-runtime-hours 1.5
 
 echo "==> Validate GRPO checkpoint"
 python3 -m agent.validate_save --model models/grpo_checkpoint \\
