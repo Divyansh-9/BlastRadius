@@ -145,11 +145,39 @@ git clone --depth 1 --branch main https://github.com/Divyansh-9/BlastRadius.git 
 cd /workspace
 
 echo "==> pip: Stage 1 only (train_sft — no vLLM yet)"
-python3 -m pip install --quiet --upgrade pip
-# Install build dependencies manually and pin setuptools < 69 to bypass unsloth's invalid PEP-621 license error.
-# unsloth requires setuptools-scm.
-python3 -m pip install --quiet "setuptools<69.0.0" "setuptools-scm" wheel
-python3 -m pip install --quiet -e ".[train_sft]" --no-build-isolation
+python3 -m pip install --quiet --upgrade pip wheel
+
+# ── NUCLEAR FIX for unsloth PEP-621 license error ─────────────────────────────
+# ROOT CAUSE: unsloth/pyproject.toml has `license = "Apache-2.0"` (bare string).
+# setuptools >= 69 (bundled in conda inside this PyTorch image) rejects this.
+# Downgrading setuptools via pip does NOT work — conda's setuptools takes precedence.
+# SOLUTION: Clone unsloth separately, surgically patch its pyproject.toml, then
+# install from the local patched source. No conda conflict possible.
+echo "  ==> Cloning unsloth to patch license field"
+git clone --depth 1 https://github.com/unslothai/unsloth.git /tmp/unsloth_src
+# Replace the bare string license with PEP-621-compliant table form
+sed -i 's/^license = "Apache-2.0"/license = {text = "Apache-2.0"}/' /tmp/unsloth_src/pyproject.toml
+# Verify the patch was applied
+echo "  ==> Patched unsloth/pyproject.toml license line:"
+grep "^license" /tmp/unsloth_src/pyproject.toml
+# Install the patched unsloth first (without [colab-new] extras that cause re-fetch)
+python3 -m pip install --quiet /tmp/unsloth_src
+python3 -m pip install --quiet "xformers" || true  # optional colab extra
+
+echo "  ==> Installing BlastRadius [train_sft] deps (excluding unsloth — already installed)"
+# Install everything in [train_sft] except the unsloth URL (already installed above)
+python3 -m pip install --quiet \
+    "trl>=0.12.0" \
+    "peft>=0.10.0" \
+    "bitsandbytes>=0.43.0" \
+    "wandb>=0.16.0" \
+    "huggingface_hub>=0.23.0" \
+    "datasets>=2.18.0" \
+    "plotly>=5.0.0" \
+    "networkx>=3.0" \
+    "python-dotenv>=1.0.0"
+# Install the environment package itself (no --no-build-isolation needed, our pyproject.toml is clean)
+python3 -m pip install --quiet -e "." --no-deps
 
 echo "==> post-pip: torch check"
 python3 <<'PY'
