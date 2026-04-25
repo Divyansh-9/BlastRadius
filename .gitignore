@@ -30,3 +30,7 @@ models/
 scrub_token.py
 push_blog_to_hf.py
 push_to_hf_space.py
+
+# Backup/temp files left by data-rewrite scripts
+*.bak
+*.tmp

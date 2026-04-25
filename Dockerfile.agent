@@ -5,6 +5,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY inference.py .
+COPY incident_env/ ./incident_env/
+COPY agent/ ./agent/
+COPY pyproject.toml .
 
-CMD ["python", "inference.py"]
+CMD ["python", "-m", "agent.orchestrator", "--task", "easy"]

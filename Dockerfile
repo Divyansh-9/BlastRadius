@@ -11,7 +11,6 @@ COPY incident_env/ ./incident_env/
 COPY openenv.yaml .
 COPY pyproject.toml .
 COPY README.md .
-COPY inference.py .
 COPY app_ui.py .
 
 # Expose port (HF Spaces default)
