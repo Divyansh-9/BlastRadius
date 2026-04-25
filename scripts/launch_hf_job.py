@@ -156,7 +156,7 @@ python3 -m pip install --quiet --upgrade pip wheel
 echo "  ==> Cloning unsloth to patch license field"
 git clone --depth 1 https://github.com/unslothai/unsloth.git /tmp/unsloth_src
 # Replace the bare string license with PEP-621-compliant table form
-sed -i 's/^license = "Apache-2.0"/license = {text = "Apache-2.0"}/' /tmp/unsloth_src/pyproject.toml
+sed -i 's/^license = "Apache-2.0"/license = {{text = "Apache-2.0"}}/' /tmp/unsloth_src/pyproject.toml
 # Verify the patch was applied
 echo "  ==> Patched unsloth/pyproject.toml license line:"
 grep "^license" /tmp/unsloth_src/pyproject.toml
