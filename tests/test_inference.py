@@ -287,7 +287,7 @@ class TestRealRunStructure:
 
     def test_run_task_on_connection_error_still_emits_end(self, capsys):
         """If the environment is unreachable, [END] must still be emitted."""
-        import requests
+        import requests  # type: ignore
         with mock.patch.dict(os.environ, {"HF_TOKEN": "fake-key"}, clear=False):
             import importlib
             import inference as m
@@ -299,11 +299,11 @@ class TestRealRunStructure:
 
         out = capsys.readouterr().out
         assert "[END]" in out
-        assert score == 0.0  # Connection failure → 0.0, not a faked score
+        assert score == 0.0  # Connection failure -> 0.0, not a faked score
 
     def test_run_task_on_connection_error_score_is_zero(self, capsys):
         """Crash score must clearly differ from the benchmark score (0.85 vs 0.0)."""
-        import requests
+        import requests  # type: ignore
         with mock.patch.dict(os.environ, {"HF_TOKEN": "fake-key"}, clear=False):
             import importlib
             import inference as m
@@ -400,10 +400,8 @@ class TestBenchmarkCredibility:
 
     def test_app_ui_scores_match_benchmark_table(self):
         """app_ui.py SCENARIO_BENCHMARKS must match the README baseline table."""
-        # Import app_ui constants directly — if they differ, tests catch it
-        sys.path.insert(0, str("d:/meta_hackthon/hf_space"))
         try:
-            # Patch gradio to avoid display init during import
+            # Patch gradio and uvicorn to avoid display/server init during import
             gradio_mock = types.ModuleType("gradio")
             gradio_mock.Blocks = mock.MagicMock(return_value=mock.MagicMock(__enter__=mock.MagicMock(return_value=mock.MagicMock()), __exit__=mock.MagicMock()))
             gradio_mock.themes = mock.MagicMock()
@@ -416,8 +414,9 @@ class TestBenchmarkCredibility:
             gradio_mock.Button = mock.MagicMock()
             gradio_mock.Textbox = mock.MagicMock()
             gradio_mock.mount_gradio_app = mock.MagicMock()
+            uvicorn_mock = types.ModuleType("uvicorn")
 
-            with mock.patch.dict("sys.modules", {"gradio": gradio_mock, "gradio.themes": gradio_mock.themes}):
+            with mock.patch.dict("sys.modules", {"gradio": gradio_mock, "gradio.themes": gradio_mock.themes, "uvicorn": uvicorn_mock}):
                 if "app_ui" in sys.modules:
                     del sys.modules["app_ui"]
                 import app_ui
