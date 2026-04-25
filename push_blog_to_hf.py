@@ -1,41 +1,39 @@
 """
-push_blog_to_hf.py
-Uploads blog.md as the README of the HF Space so it appears
-as the model card / blog post that judges will read.
-
-Usage:
-    HF_TOKEN=hf_xxx python push_blog_to_hf.py
-
-The HF_TOKEN must have WRITE access to the space Idred/BlastRadius-OpenEnv.
+push_blog_to_hf.py  —  reads HF_TOKEN from .env and uploads blog.md to HF Space
 """
-import os
-import sys
-
+import sys, os
 sys.stdout.reconfigure(encoding="utf-8")
 
+# Load .env from parent directory
+env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+env_path = os.path.normpath(env_path)
+token = ""
+if os.path.exists(env_path):
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("HF_TOKEN=") and not line.startswith("#"):
+                token = line.split("=", 1)[1].strip()
+                break
+
+token = os.environ.get("HF_TOKEN", token)
+if not token or token == "hf_your-token-here":
+    print("ERROR: No valid HF_TOKEN found in .env or environment.")
+    sys.exit(1)
+
+print(f"Using HF token: {token[:8]}...")
+
+from huggingface_hub import HfApi
+
 HF_SPACE_ID = "Idred/BlastRadius-OpenEnv"
-BLOG_FILE = "blog.md"
+blog_path = os.path.join(os.path.dirname(__file__), "blog.md")
 
-try:
-    from huggingface_hub import HfApi
-except ImportError:
-    print("ERROR: huggingface_hub not installed. Run: pip install huggingface_hub")
-    sys.exit(1)
-
-token = os.environ.get("HF_TOKEN", "")
-if not token:
-    print("ERROR: HF_TOKEN environment variable not set.")
-    print("  Set it with: $env:HF_TOKEN='hf_your_token_here'  (PowerShell)")
-    print("  Then re-run:  python push_blog_to_hf.py")
-    sys.exit(1)
-
-with open(BLOG_FILE, encoding="utf-8") as f:
+with open(blog_path, encoding="utf-8") as f:
     blog_content = f.read()
 
-# Prepend HF Space YAML frontmatter so it renders correctly
 space_readme = f"""---
 title: BlastRadius
-emoji: 💥
+emoji: \U0001f4a5
 colorFrom: red
 colorTo: yellow
 sdk: docker
@@ -45,8 +43,7 @@ pinned: false
 {blog_content}"""
 
 api = HfApi(token=token)
-
-print(f"Uploading blog.md to {HF_SPACE_ID} README.md ...")
+print(f"Uploading blog.md to {HF_SPACE_ID} as README.md ...")
 api.upload_file(
     path_or_fileobj=space_readme.encode("utf-8"),
     path_in_repo="README.md",
