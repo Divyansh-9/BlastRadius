@@ -203,8 +203,8 @@ export PIP_CONSTRAINT=/tmp/pin.txt
 pip install --quiet "transformers==4.51.3" "trl==0.13.0" "peft==0.13.2"
 pip install --quiet "bitsandbytes>=0.43.0" "datasets>=2.18.0"
 pip install --quiet "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-pip install --quiet huggingface_hub python-dotenv
-pip install --quiet "uvicorn[standard]" fastapi pydantic plotly networkx
+pip install --quiet huggingface_hub python-dotenv openai
+pip install --quiet "uvicorn[standard]" fastapi pydantic plotly networkx scipy scikit-learn
 pip uninstall -y torchao 2>/dev/null || true
 
 echo "==> CUDA re-warmup after pip"
