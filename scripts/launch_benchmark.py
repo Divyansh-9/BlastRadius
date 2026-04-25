@@ -274,17 +274,20 @@ python3 -m agent.benchmark \\
     --env-url http://127.0.0.1:7860
 
 echo "==> Uploading HTML report to HuggingFace Hub"
-python3 << 'UPLOAD'
-import os, glob
+HUB_MODEL_ID_VAL="{HUB_MODEL_ID}"
+python3 - "$HUB_MODEL_ID_VAL" << 'UPLOAD'
+import sys, os, glob
 from huggingface_hub import HfApi
+hub_id = sys.argv[1]
 api = HfApi(token=os.environ.get("HF_TOKEN"))
 reports = sorted(glob.glob("docs/runs/benchmark_*.html"))
 if reports:
     latest = reports[-1]
+    report_name = latest.split("/")[-1]
     url = api.upload_file(
         path_or_fileobj=latest,
-        path_in_repo=f"benchmark_results/{latest.split('/')[-1]}",
-        repo_id="{HUB_MODEL_ID}",
+        path_in_repo=f"benchmark_results/{{report_name}}",
+        repo_id=hub_id,
         repo_type="model",
         commit_message="Auto: GRPO benchmark report (post-training)",
     )
