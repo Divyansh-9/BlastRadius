@@ -53,6 +53,22 @@ WANDB_ENTITY = os.environ["WANDB_ENTITY"]
 WANDB_PROJECT = os.environ["WANDB_PROJECT"]
 HUB_MODEL_ID = os.environ["HUB_MODEL_ID"]
 
+# ── Pre-flight: ensure Hub model repo exists BEFORE launching ──────────────────
+# GRPOConfig(push_to_hub=True, hub_strategy="checkpoint") will 404-fail silently
+# if the repo doesn't exist when the first save_steps checkpoint fires.
+print(f"Ensuring Hub repo exists: {HUB_MODEL_ID}")
+try:
+    from huggingface_hub import HfApi
+    HfApi(token=HF_TOKEN).create_repo(
+        repo_id=HUB_MODEL_ID,
+        repo_type="model",
+        exist_ok=True,
+        private=False,
+    )
+    print(f"  ✅ Hub repo ready: https://huggingface.co/{HUB_MODEL_ID}")
+except Exception as e:
+    print(f"  ⚠️  Hub repo creation failed (will try anyway): {e}")
+
 FLAVOR = os.environ.get("HF_JOB_FLAVOR", "h200")
 TIMEOUT = os.environ.get("HF_JOB_TIMEOUT", "5h")
 
@@ -147,6 +163,14 @@ cd /workspace
 echo "==> pip: Stage 1 only (train_sft — no vLLM yet)"
 python3 -m pip install --quiet --upgrade pip wheel
 
+# ── PIN TORCH FIRST (prevents any dep from upgrading torch) ───────────────────
+# CRITICAL: unsloth's deps pulled torch 2.11.0+cu130 which broke CUDA compat.
+# We lock torch to the version baked into this container image.
+TORCH_VER=$(python3 -c "import torch; print(torch.__version__)")
+echo "  ==> Pinning torch==$TORCH_VER to prevent upgrades"
+echo "torch==$TORCH_VER" > /tmp/torch_pin.txt
+export PIP_CONSTRAINT=/tmp/torch_pin.txt
+
 # ── NUCLEAR FIX for unsloth PEP-621 license error ─────────────────────────────
 # ROOT CAUSE: unsloth/pyproject.toml has `license = "Apache-2.0"` (bare string).
 # setuptools >= 69 (bundled in conda inside this PyTorch image) rejects this.
@@ -160,9 +184,16 @@ sed -i 's/^license = "Apache-2.0"/license = {{text = "Apache-2.0"}}/' /tmp/unslo
 # Verify the patch was applied
 echo "  ==> Patched unsloth/pyproject.toml license line:"
 grep "^license" /tmp/unsloth_src/pyproject.toml
-# Install the patched unsloth first (without [colab-new] extras that cause re-fetch)
+# Install the patched unsloth from local (PIP_CONSTRAINT prevents torch upgrade)
 python3 -m pip install --quiet /tmp/unsloth_src
-python3 -m pip install --quiet "xformers" || true  # optional colab extra
+
+# ── Verify unsloth imports successfully before proceeding ─────────────────────
+python3 -c "from unsloth import FastLanguageModel; print('  ==> unsloth OK')" || \
+    {{ echo "FATAL: unsloth install failed — cannot proceed"; exit 1; }}
+
+# xformers: optional flash-attn extra; warn but don't fail (H200 uses triton)
+python3 -m pip install --quiet "xformers" 2>&1 | tail -3 || \
+    echo "  WARNING: xformers not installed — unsloth will use triton fallback (OK on H200)"
 
 echo "  ==> Installing BlastRadius [train_sft] deps (excluding unsloth — already installed)"
 # Install everything in [train_sft] except the unsloth URL (already installed above)
@@ -176,7 +207,7 @@ python3 -m pip install --quiet \
     "plotly>=5.0.0" \
     "networkx>=3.0" \
     "python-dotenv>=1.0.0"
-# Install the environment package itself (no --no-build-isolation needed, our pyproject.toml is clean)
+# Install the environment package itself (our pyproject.toml is PEP-621 clean)
 python3 -m pip install --quiet -e "." --no-deps
 
 echo "==> post-pip: torch check"
