@@ -184,13 +184,8 @@ python3 -m pip install --quiet \
     "triton" || true
 # xformers: install but don't abort if H200 has no wheel yet (triton fallback is fine)
 python3 -m pip install --quiet "xformers" 2>&1 | tail -3 || echo "WARNING: xformers not available — using triton fallback"
-# Verify unsloth is importable and torch was NOT upgraded
-python3 -c "
-import torch, torchvision
-print(f'torch={torch.__version__} torchvision={torchvision.__version__}')
-from unsloth import FastLanguageModel
-print('unsloth OK')
-" || {{ echo "FATAL: unsloth import failed — aborting"; exit 1; }}
+# Verify unsloth is importable and torch was NOT upgraded (single-line to avoid f-string conflict)
+python3 -c "import torch, torchvision; print('torch='+torch.__version__+' torchvision='+torchvision.__version__); from unsloth import FastLanguageModel; print('unsloth OK')" || {{ echo "FATAL: unsloth import failed — aborting"; exit 1; }}
 
 echo "  ==> Installing BlastRadius [train_sft] deps (excluding unsloth — already installed)"
 # Install everything in [train_sft] except the unsloth URL (already installed above)
