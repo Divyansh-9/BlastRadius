@@ -297,27 +297,60 @@ def main():
         bnb_config = None
 
     try:
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model,
-            quantization_config=bnb_config,
-            device_map="auto",
-            torch_dtype=compute_dtype,
-        )
+        import os as _os
+        _is_local_sft = _os.path.isdir(args.model)
+        if _is_local_sft:
+            # SFT checkpoint was saved by unsloth FastLanguageModel with BnB config
+            # embedded in config.json. Using AutoModelForCausalLM with a NEW
+            # BitsAndBytesConfig triggers a transformers 4.57 conflict that sets
+            # quantization_config=None → 'NoneType' has no 'to_dict' crash.
+            # Use FastLanguageModel which handles the saved quant state correctly.
+            from unsloth import FastLanguageModel as _FLM
+            model, tokenizer = _FLM.from_pretrained(
+                model_name=args.model,
+                max_seq_length=max_seq_length,
+                dtype=compute_dtype,
+                load_in_4bit=load_in_4bit,
+            )
+            print(f"Loaded SFT checkpoint via FastLanguageModel: {args.model}")
+        else:
+            # Base model from HF Hub — use standard path
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model,
+                quantization_config=bnb_config,
+                device_map="auto",
+                torch_dtype=compute_dtype,
+            )
+            print(f"Loaded base model via AutoModelForCausalLM: {args.model}")
     except Exception as e:
         raise RuntimeError(f"FATAL: Failed to load model {args.model}. Error: {e}")
 
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-
-    # Attach PEFT LoRA
-    peft_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=32,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
-                        "gate_proj", "up_proj", "down_proj"],
-        lora_alpha=64,
-        bias="none",
-    )
-    model = get_peft_model(model, peft_config)
+    # gradient_checkpointing + LoRA setup depends on which loading path was used
+    if _is_local_sft:
+        # FastLanguageModel already has LoRA from SFT — add a fresh LoRA layer for GRPO
+        from unsloth import FastLanguageModel as _FLM
+        model = _FLM.get_peft_model(
+            model,
+            r=32,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj"],
+            lora_alpha=64,
+            lora_dropout=0,
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=42,
+        )
+    else:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        peft_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=32,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj"],
+            lora_alpha=64,
+            bias="none",
+        )
+        model = get_peft_model(model, peft_config)
 
     global _model_for_emergency_save, _trainer_for_emergency_save, _args_for_emergency_save
     _model_for_emergency_save = model
