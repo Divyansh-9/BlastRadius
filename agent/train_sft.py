@@ -15,14 +15,14 @@ import sys
 import argparse
 from typing import Dict, Any
 
-from datasets import load_dataset # type: ignore
-from trl import SFTTrainer, SFTConfig # type: ignore
-
 try:
     from unsloth import FastLanguageModel, is_bfloat16_supported # type: ignore
 except ImportError:
     print("Please install unsloth: pip install unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git")
     sys.exit(1)
+
+from datasets import load_dataset # type: ignore
+from trl import SFTTrainer, SFTConfig # type: ignore
 
 
 def main():

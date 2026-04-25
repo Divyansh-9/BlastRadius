@@ -30,6 +30,14 @@ import time
 from typing import List
 from pathlib import Path
 
+try:
+    from unsloth import FastLanguageModel, PatchFastRL, is_bfloat16_supported # type: ignore
+    # Patch TRL for ultra-fast/memory-optimized GRPO
+    PatchFastRL("GRPO", FastLanguageModel)
+except ImportError:
+    print("Please install unsloth GRPO: pip install unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git")
+    sys.exit(1)
+
 from agent.curriculum import CurriculumScheduler
 
 try:
@@ -42,14 +50,6 @@ try:
     from transformers.trainer_callback import TrainerCallback # type: ignore
 except ImportError:
     TrainerCallback = object
-
-try:
-    from unsloth import FastLanguageModel, PatchFastRL, is_bfloat16_supported # type: ignore
-    # Patch TRL for ultra-fast/memory-optimized GRPO
-    PatchFastRL("GRPO", FastLanguageModel)
-except ImportError:
-    print("Please install unsloth GRPO: pip install unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git")
-    sys.exit(1)
 
 from trl import GRPOConfig, GRPOTrainer # type: ignore
 
