@@ -102,6 +102,12 @@ The CDN cache was invalidated. This is routine and NOT the cause. All traffic hi
 - **Database Split-Brain Failover (Hard)** `hard_db_failover`: Dual-master writes after temporary network partition (inspired by GitHub 2018).
 - **Object Storage Keyspace Overflow (Hard)** `hard_s3_keyspace_overflow`: Batch workloads exhausting internal metadata index capacity (inspired by AWS S3 2017).
 
+## 🤖 MATPO Architecture
+
+The agent stack abandons traditional "Two-Model" architectures (which cause OOM errors and credit assignment failure) in favor of **MATPO (Multi-Agent Tool-Integrated Policy Optimization)**. 
+
+Instead of having a separate Scout model and Commander model, MATPO uses a single model with a unified schema. This allows us to train one cohesive policy using GRPO, keeping VRAM usage drastically lower while retaining the explicit reasoning capabilities of multi-agent patterns. For a deep dive into the MATPO schema and credit assignment mechanics, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ## 🧠 MLOps: Spot-Aware GRPO Training on A100
 
 We provide a production-ready RL training pipeline designed for a low compute budget. It targets 32B reasoning models (e.g., `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`) and utilizes **Spot Instances**, **WandB live tracking**, and **Async Checkpointing**. 
