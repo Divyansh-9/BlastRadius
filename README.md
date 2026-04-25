@@ -110,9 +110,23 @@ Instead of having a separate Scout model and Commander model, MATPO uses a singl
 
 ## 🧠 MLOps: Spot-Aware GRPO Training on A100
 
-We provide a production-ready RL training pipeline designed for a low compute budget. It targets 32B reasoning models (e.g., `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`) and utilizes **Spot Instances**, **WandB live tracking**, and **Async Checkpointing**. 
+We provide a production-ready RL training pipeline designed for a low compute budget. It targets 14B reasoning models (default: `unsloth/Qwen2.5-14B-Instruct-bnb-4bit`) and utilizes **Spot Instances**, **WandB live tracking**, and **Async Checkpointing**.
 
 To survive Spot instance preemptions with zero wasted GPU time, the `train_grpo.py` loop hooks into `SIGTERM` and forces an emergency push to the Hugging Face Hub 30 seconds before the instance is killed.
+
+### Credentials
+
+Copy `.env.example` to `.env` (one level up from the repo, or inside it — both locations are picked up by the notebook) and fill in:
+
+| Variable | Used by | Notes |
+|---|---|---|
+| `HF_TOKEN` | GRPO checkpoint pushes, hub auto-recovery | Needs **write** scope on `HUB_MODEL_ID` |
+| `HUB_MODEL_ID` | `train_grpo.py --hub-model-id` | e.g. `your-org/BlastRadius-GRPO-Checkpoints` |
+| `WANDB_API_KEY` | WandB run init | Get from https://wandb.ai/authorize |
+| `WANDB_ENTITY` | WandB org/user namespace | e.g. `your-wandb-team` |
+| `WANDB_PROJECT` | WandB project name | Defaults to `blastradius-grpo` |
+
+For **HF Jobs** (remote A100), set the same variables as **Job secrets** in the HF UI — the notebook reads them from `os.environ` either way.
 
 ### Generating SFT Data
 ```bash
@@ -124,6 +138,16 @@ python -m agent.generate_sft_data \
 
 ### Starting the Training Run
 ```bash
+# Option A: rely on .env (loaded automatically by the notebook)
+python -m agent.train_grpo \
+    --model models/sft_checkpoint \
+    --data sft_data/expert_trajectories.jsonl \
+    --output models/grpo_checkpoint \
+    --hardware-profile a100 \
+    --wandb-entity "$WANDB_ENTITY" \
+    --hub-model-id "$HUB_MODEL_ID"
+
+# Option B: pass everything inline
 WANDB_API_KEY=your_key python -m agent.train_grpo \
     --model models/sft_checkpoint \
     --data sft_data/expert_trajectories.jsonl \

@@ -41,6 +41,7 @@ train = [
     "datasets>=2.18.0",
     "plotly>=5.0.0",
     "networkx>=3.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [tool.setuptools.packages.find]
