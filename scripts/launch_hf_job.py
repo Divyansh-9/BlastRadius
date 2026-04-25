@@ -57,10 +57,15 @@ FLAVOR = os.environ.get("HF_JOB_FLAVOR", "h200")
 TIMEOUT = os.environ.get("HF_JOB_TIMEOUT", "5h")
 
 # NGC: full CUDA user-mode stack (fixes torch init on many HF h200 workers).
+# Hopper/H200 on HF Jobs sometimes hits CUDA 802 ("system not yet initialized") if
+# PyTorch loads before the device stack is ready — 25.x NGC images track newer
+# host drivers; see JOB_SCRIPT for retry/warmup as well.
 # Official pytorch images work better on a100 where the driver/runtime gap is smaller.
 def _default_image(flavor: str) -> str:
     if flavor.startswith("h200"):
-        return "nvcr.io/nvidia/pytorch:24.10-py3"
+        # 25.01 verified on NGC; pairs better with current H200 host drivers than 24.10 when 802 appears.
+        # Fallback: HF_JOB_IMAGE=nvcr.io/nvidia/pytorch:24.10-py3
+        return "nvcr.io/nvidia/pytorch:25.01-py3"
     return "pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel"
 
 
@@ -72,7 +77,8 @@ set -euo pipefail
 # ── Container GPU runtime (K8s / HF Jobs) ─────────────────
 export NVIDIA_VISIBLE_DEVICES="${{NVIDIA_VISIBLE_DEVICES:-all}}"
 export NVIDIA_DRIVER_CAPABILITIES="${{NVIDIA_DRIVER_CAPABILITIES:-compute,utility}}"
-export CUDA_MODULE_LOADING="${{CUDA_MODULE_LOADING:-LAZY}}"
+# LAZY has been observed to worsen CUDA 802 init ordering on HF h200; EAGER is safer here.
+export CUDA_MODULE_LOADING="${{CUDA_MODULE_LOADING:-EAGER}}"
 
 # Prefer bundled CUDA libs from common locations (pytorch + NGC layouts).
 for _lib in /usr/local/cuda/lib64 /usr/local/cuda-12.4/lib64 /usr/local/cuda-12.6/lib64 \\
@@ -89,21 +95,36 @@ ls -la /dev/nvidia* 2>/dev/null || true
 
 echo "==> nvidia-smi (host-visible GPUs)"
 nvidia-smi
+# Driver stack can lag nvidia-smi on fresh HF pods; brief wait + ldconfig reduces CUDA 802 races.
+ldconfig 2>/dev/null || true
+sleep 3
 
 echo "==> Pre-pip: baseline torch (must be True on a healthy image)"
 export PIP_BREAK_SYSTEM_PACKAGES=1
 export PIP_ROOT_USER_ACTION=ignore
-python3 <<'PY'
+
+_ok=0
+for _attempt in $(seq 1 45); do
+  if python3 -c "
 import os, sys
-print("LD_LIBRARY_PATH=", os.environ.get("LD_LIBRARY_PATH", "")[:500])
+print('LD_LIBRARY_PATH=', (os.environ.get('LD_LIBRARY_PATH') or '')[:500])
 import torch
-print("torch", torch.__version__, "built_cuda", torch.version.cuda, "is_available", torch.cuda.is_available())
+print('torch', torch.__version__, 'built_cuda', torch.version.cuda, 'is_available', torch.cuda.is_available())
 if torch.cuda.is_available():
-    print("device0", torch.cuda.get_device_name(0))
-else:
-    print("FATAL: torch sees no CUDA before any project pip install. Wrong HF_JOB_IMAGE for this node.")
-    sys.exit(1)
-PY
+    print('device0', torch.cuda.get_device_name(0))
+    sys.exit(0)
+sys.exit(1)
+"; then
+    _ok=1
+    break
+  fi
+  echo "  [warmup] torch CUDA not ready (attempt $_attempt/45), sleeping 2s — HF H200 802 race?"
+  sleep 2
+done
+if [ "$_ok" -ne 1 ]; then
+  echo "FATAL: torch sees no CUDA before any project pip install after warm-up retries. Try HF_JOB_IMAGE=nvcr.io/nvidia/pytorch:25.04-py3 or flavor a100-large."
+  exit 1
+fi
 
 echo "==> Apt: git + build essentials (only if missing)"
 if ! command -v git &>/dev/null; then
