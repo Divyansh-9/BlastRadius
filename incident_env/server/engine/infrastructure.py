@@ -134,6 +134,8 @@ class ServiceGraph:
                     "unhealthy_since_minute": svc.unhealthy_since_minute,
                     "log_pattern": svc.log_pattern,
                     "has_recent_deploy": svc.has_recent_deploy,
+                    "deploy_version": svc.deploy_version,
+                    "previous_version": svc.previous_version,
                 }
                 for name, svc in self._services.items()
             },
@@ -161,6 +163,9 @@ class ServiceGraph:
             svc.unhealthy_since_minute = svc_state["unhealthy_since_minute"]
             svc.log_pattern = svc_state["log_pattern"]
             svc.has_recent_deploy = svc_state["has_recent_deploy"]
+            # Bug K: Restore deploy versions for replay fidelity
+            svc.deploy_version = svc_state.get("deploy_version", svc.deploy_version)
+            svc.previous_version = svc_state.get("previous_version", svc.previous_version)
 
         for i, rule_state in enumerate(snapshot.get("cascade_rules", [])):
             if i < len(self._cascade_rules):
@@ -297,6 +302,10 @@ class ServiceGraph:
         svc.current_metrics["latency_p99_ms"] = svc.healthy_metrics["latency_p99_ms"] * 8
         svc.current_metrics["error_rate_percent"] = min(svc.healthy_metrics["error_rate_percent"] * 50, 25.0)
         svc.current_metrics["requests_per_sec"] = svc.healthy_metrics["requests_per_sec"] * 0.6
+        # Bug L: Signal connection pressure in degraded state
+        svc.current_metrics["active_connections"] = min(
+            int(svc.healthy_metrics.get("active_connections", 45) * 2.2), 100
+        )
 
     def _apply_down_metrics(self, svc: ServiceNode):
         """Apply down-state metrics to a service."""
@@ -472,12 +481,17 @@ class ServiceGraph:
         if svc.fix_order <= 0:
             return True, None
         for other in self._services.values():
-            if (
-                other.name != svc.name
-                and other.fix_order > 0
-                and other.fix_order < svc.fix_order
-                and other.status != ServiceStatus.HEALTHY
-            ):
+            if other.name == svc.name:
+                continue
+            # Bug J: Root cause services with fix_order=0 always block higher-order fixes
+            is_blocker = (
+                other.status != ServiceStatus.HEALTHY
+                and (
+                    (other.fix_order > 0 and other.fix_order < svc.fix_order)
+                    or (other.is_root_cause and svc.fix_order > 0)
+                )
+            )
+            if is_blocker:
                 return False, other.name
         return True, None
 
@@ -513,6 +527,10 @@ class ServiceGraph:
                         "target": svc.name,
                         "minute": self._time_minutes,
                     })
+                    # Bug G: Re-arm cascade rules targeting this service
+                    for rule in self._cascade_rules:
+                        if rule.target == svc.name and rule.triggered:
+                            rule.triggered = False
                     changed = True
 
     def _apply_cascading_damage(self, source_name: str):
@@ -538,7 +556,11 @@ class ServiceGraph:
         return all(s.status == ServiceStatus.HEALTHY for s in self._services.values())
 
     def get_resolved_services(self) -> List[str]:
-        return [e["target"] for e in self._fix_history]
+        # Bug F: Exclude auto-recoveries — only explicit agent actions count
+        return [
+            e["target"] for e in self._fix_history
+            if e.get("action") != "auto_recovery"
+        ]
 
     def count_collateral_damage(self) -> int:
         return sum(1 for e in self._damage_events if e.get("type") == "collateral_damage")

@@ -83,9 +83,10 @@ def compute_chain_similarity(
     if not agent_chain or not truth_chain:
         return 0.0, 0, max(len(truth_chain), 1)
 
-    # Build corpus from both chains for IDF
-    all_docs = [_tokenize(s) for s in agent_chain + truth_chain]
-    idf_map = _idf(all_docs)
+    # Bug I: IDF from ground truth only — standard IR practice.
+    # Using both chains penalizes correct agents (shared terms get lower IDF).
+    truth_docs = [_tokenize(s) for s in truth_chain]
+    idf_map = _idf(truth_docs)
 
     agent_vectors = [_tfidf_vector(_tokenize(s), idf_map) for s in agent_chain]
     truth_vectors = [_tfidf_vector(_tokenize(s), idf_map) for s in truth_chain]
@@ -396,7 +397,12 @@ class Grader:
             if not self._revision_used:
                 self._revision_used = True
                 self._diagnosis_submitted = False  # Reset to allow re-grade
-                r, b, f = self._grade_diagnosis_inner(params)
+                # Bug H: Guard against exceptions leaving _diagnosis_submitted=False
+                try:
+                    r, b, f = self._grade_diagnosis_inner(params)
+                except Exception:
+                    self._diagnosis_submitted = True  # restore on failure
+                    raise
                 return round(r * 0.5, 4), {k: round(v * 0.5, 4) for k, v in b.items()}, f"[REVISED x0.5] {f}"
             return rc.duplicate_diagnosis, {"duplicate_diagnosis": rc.duplicate_diagnosis}, "No more revisions allowed."
         return self._grade_diagnosis_inner(params)
@@ -443,7 +449,8 @@ class Grader:
             )
 
         # Symmetric confidence calibration
-        confidence = params.get("confidence", 0.5)
+        # Bug N: Clamp confidence to [0, 1] — reject nonsensical values
+        confidence = max(0.0, min(1.0, float(params.get("confidence", 0.5))))
         actual_accuracy = 1.0 if agent_root_cause == self._config.root_cause_service else 0.0
         calibration_error = abs(confidence - actual_accuracy)
         if calibration_error < rc.confidence_calibration_tolerance:
