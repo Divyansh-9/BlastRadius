@@ -5,14 +5,14 @@ Spawns a Hugging Face Job that runs the full SFT + GRPO pipeline
 for BlastRadius end-to-end.
 
 Hardware / image strategy (HF Jobs; verified Apr 2026):
-- **H200** + host driver **580 / CUDA 13.0**: use
-  `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel`. On the same nodes,
-  `2.4-cuda12.1`, `2.11-cuda13`, and `nvcr.io/nvidia/pytorch:24.10-py3`
-  can all return `torch.cuda.is_available() == False` with **Error 802**
-  while `nvidia-smi` still works — the 12.4 user-mode stack + forward-compat
-  to this driver is what actually works for PyTorch.
+- **H200** + host driver **580 / CUDA 13.0**: ONLY use
+  `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel`. The NGC image
+  `nvcr.io/nvidia/pytorch:24.10-py3` (CUDA 12.6) returns
+  `torch.cuda.is_available() == False` with Error 802 even when
+  nvidia-smi shows GPUs — the 12.4 forward-compat layer is required.
 - **a100-large** is still the most battle-tested profile; default image
   `pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel` (override with `HF_JOB_IMAGE`).
+- NEVER use NGC/nvcr.io images on H200 HF Job nodes.
 
 vLLM is installed *after* SFT (see `pyproject.toml` `train_sft` / `train_grpo`)
 so pip cannot replace torch + bitsandbytes before the cold-start SFT run.
@@ -96,8 +96,12 @@ echo "==> Pre-pip: baseline torch (must be True on a healthy image)"
 export PIP_BREAK_SYSTEM_PACKAGES=1
 export PIP_ROOT_USER_ACTION=ignore
 
+echo "===> Running image: ${{HF_JOB_IMAGE:-unknown}}"
+echo "===> Checking CUDA device files:"
+ls /dev/nvidia* 2>/dev/null || echo "  (no /dev/nvidia* found)"
+
 _ok=0
-for _attempt in $(seq 1 35); do
+for _attempt in $(seq 1 8); do
   if python3 -c "
 import os, sys
 print('LD_LIBRARY_PATH=', (os.environ.get('LD_LIBRARY_PATH') or '')[:500])
@@ -111,11 +115,15 @@ sys.exit(1)
     _ok=1
     break
   fi
-  echo "  [warmup] torch CUDA not ready (attempt $_attempt/35), sleep 2s (HF h200 802 / init race?)"
-  sleep 2
+  echo "  [warmup] torch CUDA not ready (attempt $_attempt/8), sleep 5s..."
+  ldconfig 2>/dev/null || true
+  sleep 5
 done
 if [ "$_ok" -ne 1 ]; then
-  echo "FATAL: torch does not see CUDA. On HF h200 use: HF_JOB_IMAGE=pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel (forward-compat w/ driver 580), or set HF_JOB_FLAVOR=a100-large."
+  echo "FATAL: torch sees no CUDA. Image was: ${{HF_JOB_IMAGE:-unknown}}"
+  echo "  Fix: set HF_JOB_IMAGE=pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel"
+  echo "  NGC/nvcr.io images (e.g. nvcr.io/nvidia/pytorch:24.10-py3) are INCOMPATIBLE with H200 HF nodes."
+  echo "  Alternatively use: HF_JOB_FLAVOR=a100-large"
   exit 1
 fi
 
@@ -134,7 +142,10 @@ cd /workspace
 
 echo "==> pip: Stage 1 only (train_sft — no vLLM yet)"
 python3 -m pip install --quiet --upgrade pip
-python3 -m pip install --quiet -e ".[train_sft]" --no-build-isolation
+python3 -m pip install --quiet "setuptools>=68" wheel
+# Do NOT use --no-build-isolation here: resolving .[train_sft] metadata (incl. git deps)
+# needs an isolated PEP 517 env; no-build-isolation caused "Preparing metadata failed" on HF.
+python3 -m pip install --quiet -e ".[train_sft]"
 
 echo "==> post-pip: torch check"
 python3 <<'PY'
@@ -157,7 +168,7 @@ echo "==> pip: vLLM for GRPO (after SFT; pin torch in constraint file)"
 TORCH_VER=$(python3 -c "import torch; print(torch.__version__)" | tr -d '[:space:]')
 echo "torch==$TORCH_VER" > /tmp/torch_pinned
 export PIP_CONSTRAINT=/tmp/torch_pinned
-python3 -m pip install --quiet "vllm>=0.5.0" --no-build-isolation
+python3 -m pip install --quiet "vllm>=0.5.0"
 
 echo "==> post-vLLM: torch check"
 python3 -c "import torch; assert torch.cuda.is_available()"
@@ -199,6 +210,8 @@ cmd = [
     f"WANDB_PROJECT={WANDB_PROJECT}",
     "-e",
     f"HUB_MODEL_ID={HUB_MODEL_ID}",
+    "-e",
+    f"HF_JOB_IMAGE={DOCKER_IMAGE}",
     DOCKER_IMAGE,
     "bash",
     "-c",
