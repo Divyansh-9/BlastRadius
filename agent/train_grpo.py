@@ -300,11 +300,6 @@ def main():
         import os as _os
         _is_local_sft = _os.path.isdir(args.model)
         if _is_local_sft:
-            # SFT checkpoint was saved by unsloth FastLanguageModel with BnB config
-            # embedded in config.json. Using AutoModelForCausalLM with a NEW
-            # BitsAndBytesConfig triggers a transformers 4.57 conflict that sets
-            # quantization_config=None → 'NoneType' has no 'to_dict' crash.
-            # Use FastLanguageModel which handles the saved quant state correctly.
             from unsloth import FastLanguageModel as _FLM
             model, tokenizer = _FLM.from_pretrained(
                 model_name=args.model,
@@ -327,19 +322,12 @@ def main():
 
     # gradient_checkpointing + LoRA setup depends on which loading path was used
     if _is_local_sft:
-        # FastLanguageModel already has LoRA from SFT — add a fresh LoRA layer for GRPO
         from unsloth import FastLanguageModel as _FLM
-        model = _FLM.get_peft_model(
-            model,
-            r=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
-            lora_alpha=64,
-            lora_dropout=0,
-            bias="none",
-            use_gradient_checkpointing="unsloth",
-            random_state=42,
-        )
+        # SFT checkpoint already has LoRA adapters (r=32, same targets) embedded.
+        # Calling get_peft_model() again raises "model already has LoRA adapters".
+        # Just activate training mode on the existing LoRA layers instead.
+        _FLM.for_training(model)
+        print("SFT LoRA adapters reused for GRPO (r=32). Training mode enabled.")
     else:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         peft_config = LoraConfig(
