@@ -148,5 +148,5 @@ class CertExpiryScenario(BaseScenario):
             correct_fix_order=["cert-manager", "internal-gateway"],
             useful_investigation_targets=["internal-gateway", "cert-manager"],
             max_optimal_steps=7,
-            max_total_reward=0.75,
+            max_total_reward=0.77,
         )

@@ -295,5 +295,5 @@ class HardScenario(BaseScenario):
                 # cdn intentionally excluded: it's a red herring (healthy but misleading metrics)
             ],
             max_optimal_steps=12,
-            max_total_reward=1.0,
+            max_total_reward=1.22,
         )

@@ -5,12 +5,155 @@ Computes per-step rewards and final episode scores.
 Includes causal chain evaluation — the key differentiator.
 
 Reward ranges are clamped to [0.0, 1.0] for final scores.
+
+v2.0 — TF-IDF cosine similarity for causal chains, configurable
+reward magnitudes, smooth speed bonus, symmetric confidence
+calibration.
 """
 
 from __future__ import annotations
 
+import math
+import re
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+
+# ─────────────────────────────────────────────────────────────
+# Lightweight TF-IDF Cosine Similarity (no external dependency)
+# ─────────────────────────────────────────────────────────────
+
+def _tokenize(text: str) -> List[str]:
+    """Simple whitespace + punctuation tokenizer."""
+    return re.findall(r"[a-z0-9]+(?:[-_][a-z0-9]+)*", text.lower())
+
+
+def _tf(tokens: List[str]) -> Dict[str, float]:
+    """Term frequency: count / total."""
+    counts = Counter(tokens)
+    total = len(tokens) or 1
+    return {t: c / total for t, c in counts.items()}
+
+
+def _idf(documents: List[List[str]]) -> Dict[str, float]:
+    """Inverse document frequency across a corpus."""
+    n = len(documents) or 1
+    df: Dict[str, int] = {}
+    for doc in documents:
+        for token in set(doc):
+            df[token] = df.get(token, 0) + 1
+    return {t: math.log((n + 1) / (d + 1)) + 1 for t, d in df.items()}
+
+
+def _tfidf_vector(tokens: List[str], idf_map: Dict[str, float]) -> Dict[str, float]:
+    """Build a TF-IDF vector for a single document."""
+    tf = _tf(tokens)
+    return {t: tf_val * idf_map.get(t, 1.0) for t, tf_val in tf.items()}
+
+
+def _cosine_similarity(v1: Dict[str, float], v2: Dict[str, float]) -> float:
+    """Cosine similarity between two sparse vectors."""
+    common = set(v1) & set(v2)
+    if not common:
+        return 0.0
+    dot = sum(v1[k] * v2[k] for k in common)
+    mag1 = math.sqrt(sum(val ** 2 for val in v1.values()))
+    mag2 = math.sqrt(sum(val ** 2 for val in v2.values()))
+    if mag1 == 0 or mag2 == 0:
+        return 0.0
+    return dot / (mag1 * mag2)
+
+
+def compute_chain_similarity(
+    agent_chain: List[str],
+    truth_chain: List[str],
+    similarity_threshold: float = 0.20,
+) -> Tuple[float, int, int]:
+    """
+    Compare agent's causal chain against ground truth using TF-IDF
+    cosine similarity.
+
+    Returns (accuracy, matched_count, truth_count).
+
+    Each agent step is matched to the best ground truth step.
+    A match counts if cosine similarity >= threshold.
+    Each truth step can only be matched once (greedy best-first).
+    """
+    if not agent_chain or not truth_chain:
+        return 0.0, 0, max(len(truth_chain), 1)
+
+    # Build corpus from both chains for IDF
+    all_docs = [_tokenize(s) for s in agent_chain + truth_chain]
+    idf_map = _idf(all_docs)
+
+    agent_vectors = [_tfidf_vector(_tokenize(s), idf_map) for s in agent_chain]
+    truth_vectors = [_tfidf_vector(_tokenize(s), idf_map) for s in truth_chain]
+
+    # Compute similarity matrix
+    similarities = []
+    for ai, av in enumerate(agent_vectors):
+        for ti, tv in enumerate(truth_vectors):
+            sim = _cosine_similarity(av, tv)
+            if sim >= similarity_threshold:
+                similarities.append((sim, ai, ti))
+
+    # Greedy matching: highest similarity first, no reuse
+    similarities.sort(reverse=True)
+    matched_agent = set()
+    matched_truth = set()
+    matched_count = 0
+
+    for sim, ai, ti in similarities:
+        if ai not in matched_agent and ti not in matched_truth:
+            matched_agent.add(ai)
+            matched_truth.add(ti)
+            matched_count += 1
+
+    accuracy = matched_count / len(truth_chain)
+    return accuracy, matched_count, len(truth_chain)
+
+
+# ─────────────────────────────────────────────────────────────
+# Reward Configuration (eliminates all magic numbers)
+# ─────────────────────────────────────────────────────────────
+
+@dataclass
+class RewardConfig:
+    """
+    All reward magnitudes in one place.
+    No magic numbers anywhere else in this file.
+    """
+    # Investigation
+    status_check_reward: float = 0.02
+    max_status_checks_rewarded: int = 2
+    useful_investigation: float = 0.05
+    irrelevant_investigation: float = -0.02
+
+    # Diagnosis
+    root_cause_correct: float = 0.15
+    root_cause_wrong: float = -0.03
+    causal_chain_max: float = 0.10
+    confidence_calibrated: float = 0.03
+    confidence_miscalibrated: float = -0.03
+    confidence_calibration_tolerance: float = 0.2
+    duplicate_diagnosis: float = -0.02
+
+    # Fixes
+    correct_fix: float = 0.20
+    wrong_fix: float = -0.05
+    collateral_damage_per_event: float = -0.15
+
+    # Episode completion
+    resolution_bonus: float = 0.05
+    speed_bonus_max: float = 0.10
+
+    # Causal chain similarity
+    chain_similarity_threshold: float = 0.20
+
+
+# Default config instance
+DEFAULT_REWARD_CONFIG = RewardConfig()
 
 
 @dataclass
@@ -42,27 +185,30 @@ class Grader:
     """
     Scores agent performance with rich, continuous reward signals.
 
-    Reward Sources
-    --------------
-    +0.05  Investigating a useful target (checking logs/metrics of relevant service)
-    +0.15  Correctly identifying root cause via diagnose command
-    +0.10  Correct causal chain (partial credit for partial accuracy)
-    +0.20  Each correct fix applied
-    +0.05  Speed bonus (solving in fewer steps)
-    -0.02  Investigating irrelevant service
-    -0.05  Wrong fix attempt (restart/rollback/scale wrong target)
-    -0.15  Causing collateral damage (wrong fix order)
+    v2.0 Changes:
+    - TF-IDF cosine similarity for causal chain evaluation
+    - All reward values from RewardConfig (no magic numbers)
+    - Smooth linear speed bonus (not step function)
+    - Symmetric confidence calibration (penalizes overconfident wrong)
+    - Duplicate diagnosis returns 0 (not penalty for re-submitting correct)
     """
 
-    def __init__(self, config: ScenarioGradingConfig):
+    def __init__(
+        self,
+        config: ScenarioGradingConfig,
+        reward_config: Optional[RewardConfig] = None,
+    ):
         self._config = config
+        self._rc = reward_config or DEFAULT_REWARD_CONFIG
         self._investigated_services: set = set()
         self._diagnosis_submitted: bool = False
+        self._diagnosis_was_correct: bool = False
         self._fixes_applied: List[str] = []
         self._collateral_count: int = 0
         self._cumulative_reward: float = 0.0
         self._step_rewards: List[float] = []
-        self._status_check_count: int = 0  # track check_status calls
+        self._status_check_count: int = 0
+        self._fix_attempts: Dict[str, int] = {}  # anti-cheat: track per-service
 
     def grade_step(
         self,
@@ -96,25 +242,25 @@ class Grader:
         reward = 0.0
         breakdown = {}
         feedback_parts = []
+        rc = self._rc
 
         # ─── Investigation rewards ───
         if command in ("check_logs", "check_metrics", "check_status"):
             if command == "check_status":
-                # check_status is always slightly useful (free action) — reward first 2 calls
                 self._status_check_count += 1
-                if self._status_check_count <= 2:
-                    reward += 0.02
-                    breakdown["status_check"] = 0.02
+                if self._status_check_count <= rc.max_status_checks_rewarded:
+                    reward += rc.status_check_reward
+                    breakdown["status_check"] = rc.status_check_reward
                     feedback_parts.append("Good: Checking overall system status.")
             elif target in self._config.useful_investigation_targets:
                 if target not in self._investigated_services:
-                    reward += 0.05
-                    breakdown["useful_investigation"] = 0.05
+                    reward += rc.useful_investigation
+                    breakdown["useful_investigation"] = rc.useful_investigation
                     feedback_parts.append(f"Good: Investigating {target} is relevant.")
                     self._investigated_services.add(target)
             else:
-                reward -= 0.02
-                breakdown["irrelevant_investigation"] = -0.02
+                reward += rc.irrelevant_investigation
+                breakdown["irrelevant_investigation"] = rc.irrelevant_investigation
                 feedback_parts.append(f"Wasted time: {target} is not directly relevant.")
 
         # ─── Diagnosis rewards ───
@@ -126,30 +272,37 @@ class Grader:
 
         # ─── Fix action rewards ───
         elif command in ("restart_service", "rollback_deploy", "scale_service"):
+            # Track fix attempts per service (anti-cheat)
+            self._fix_attempts[target] = self._fix_attempts.get(target, 0) + 1
+
             if action_succeeded:
                 if target not in self._fixes_applied:
-                    # First time this service is fixed — full reward
-                    reward += 0.20
-                    breakdown["correct_fix"] = 0.20
+                    reward += rc.correct_fix
+                    breakdown["correct_fix"] = rc.correct_fix
                     feedback_parts.append(f"Excellent: {command} on {target} fixed the service.")
                     self._fixes_applied.append(target)
                 else:
-                    # Already rewarded for this target — no double credit
                     feedback_parts.append(f"Note: {target} was already fixed.")
             else:
-                # Distinguish: already-healthy (wasted step, 0) vs genuinely wrong fix (-0.05)
                 if target in self._fixes_applied:
-                    # Service already fixed — just a wasted step, not penalized
                     feedback_parts.append(f"Wasted step: {target} is already healthy.")
                 else:
-                    reward -= 0.05
-                    breakdown["wrong_fix"] = -0.05
+                    reward += rc.wrong_fix
+                    breakdown["wrong_fix"] = rc.wrong_fix
                     feedback_parts.append(f"Failed: {command} on {target} did not resolve the issue.")
+
+            # Anti-cheat: penalize excessive fix attempts on same service
+            attempts = self._fix_attempts[target]
+            if attempts > 2:
+                spam_penalty = -0.01 * (attempts - 2)
+                reward += spam_penalty
+                breakdown["fix_spam_penalty"] = spam_penalty
+                feedback_parts.append(f"Warning: Repeated fix attempts on {target} (attempt #{attempts}).")
 
         # ─── Collateral damage penalty ───
         new_damage = collateral_damage - self._collateral_count
         if new_damage > 0:
-            penalty = new_damage * -0.15
+            penalty = new_damage * rc.collateral_damage_per_event
             reward += penalty
             breakdown["collateral_damage"] = penalty
             feedback_parts.append(f"DAMAGE: {new_damage} additional service(s) affected by wrong action order.")
@@ -157,18 +310,21 @@ class Grader:
 
         # ─── All resolved bonus ───
         if all_resolved:
-            # Speed bonus: fewer steps = more reward
+            # Smooth linear speed bonus (not step function)
             optimal = self._config.max_optimal_steps
             if step_number <= optimal:
-                speed_bonus = 0.10
-            elif step_number <= optimal * 1.5:
-                speed_bonus = 0.05
+                speed_bonus = rc.speed_bonus_max
+            elif step_number >= optimal * 2:
+                speed_bonus = 0.0
             else:
-                speed_bonus = 0.00
+                # Linear interpolation: bonus decreases linearly from max to 0
+                progress = (step_number - optimal) / optimal
+                speed_bonus = round(rc.speed_bonus_max * (1.0 - progress), 4)
+
             reward += speed_bonus
             breakdown["speed_bonus"] = speed_bonus
-            breakdown["resolution_bonus"] = 0.05
-            reward += 0.05
+            breakdown["resolution_bonus"] = rc.resolution_bonus
+            reward += rc.resolution_bonus
             feedback_parts.append(f"🎉 All services resolved in {step_number} steps!")
 
         # Track
@@ -186,53 +342,60 @@ class Grader:
         reward = 0.0
         breakdown = {}
         feedback_parts = []
+        rc = self._rc
 
         if self._diagnosis_submitted:
-            return -0.02, {"duplicate_diagnosis": -0.02}, "Diagnosis already submitted."
+            # Don't penalize re-submission of a CORRECT diagnosis
+            if self._diagnosis_was_correct:
+                return 0.0, {}, "Diagnosis already submitted (correct). No change."
+            return rc.duplicate_diagnosis, {"duplicate_diagnosis": rc.duplicate_diagnosis}, "Diagnosis already submitted."
         self._diagnosis_submitted = True
 
         # Root cause identification
         agent_root_cause = params.get("root_cause", "")
         if agent_root_cause == self._config.root_cause_service:
-            reward += 0.15
-            breakdown["root_cause_correct"] = 0.15
+            reward += rc.root_cause_correct
+            breakdown["root_cause_correct"] = rc.root_cause_correct
             feedback_parts.append("✅ Root cause correctly identified!")
+            self._diagnosis_was_correct = True
         else:
-            reward -= 0.03
-            breakdown["root_cause_wrong"] = -0.03
+            reward += rc.root_cause_wrong
+            breakdown["root_cause_wrong"] = rc.root_cause_wrong
             feedback_parts.append(
                 f"❌ Wrong root cause: you said '{agent_root_cause}', "
                 f"actual is '{self._config.root_cause_service}'."
             )
 
-        # Causal chain evaluation
+        # Causal chain evaluation (TF-IDF cosine similarity)
         agent_chain = params.get("causal_chain", [])
         if agent_chain and self._config.ground_truth_causal_chain:
             truth = self._config.ground_truth_causal_chain
-            # Calculate overlap score
-            correct_steps = sum(
-                1 for step in agent_chain
-                if any(truth_step.lower() in step.lower() or step.lower() in truth_step.lower()
-                       for truth_step in truth)
-            )
-            chain_accuracy = correct_steps / max(len(truth), 1)
 
-            chain_reward = round(0.10 * chain_accuracy, 4)
+            chain_accuracy, matched, total = compute_chain_similarity(
+                agent_chain, truth, rc.chain_similarity_threshold
+            )
+
+            chain_reward = round(rc.causal_chain_max * chain_accuracy, 4)
             reward += chain_reward
             breakdown["causal_chain_accuracy"] = chain_reward
             feedback_parts.append(
-                f"Causal chain: {correct_steps}/{len(truth)} steps correct "
-                f"({chain_accuracy:.0%} accuracy)"
+                f"Causal chain: {matched}/{total} steps matched "
+                f"({chain_accuracy:.0%} semantic accuracy)"
             )
 
-        # Confidence calibration bonus
+        # Symmetric confidence calibration
         confidence = params.get("confidence", 0.5)
         actual_accuracy = 1.0 if agent_root_cause == self._config.root_cause_service else 0.0
         calibration_error = abs(confidence - actual_accuracy)
-        if calibration_error < 0.2:
-            reward += 0.03
-            breakdown["confidence_calibrated"] = 0.03
+        if calibration_error < rc.confidence_calibration_tolerance:
+            reward += rc.confidence_calibrated
+            breakdown["confidence_calibrated"] = rc.confidence_calibrated
             feedback_parts.append("Confidence well-calibrated.")
+        elif confidence > 0.7 and actual_accuracy == 0.0:
+            # Penalize overconfident wrong answers (symmetric calibration)
+            reward += rc.confidence_miscalibrated
+            breakdown["confidence_miscalibrated"] = rc.confidence_miscalibrated
+            feedback_parts.append("⚠️ Overconfident wrong diagnosis penalized.")
 
         return reward, breakdown, " | ".join(feedback_parts)
 
@@ -241,7 +404,7 @@ class Grader:
         Compute final episode score normalized to [0.0, 1.0].
         """
         raw = self._cumulative_reward
-        # Normalize: max theoretical reward is ~1.0 depending on scenario
+        # Normalize: max theoretical reward is scenario-specific
         score = max(0.0, min(1.0, raw / self._config.max_total_reward))
 
         breakdown = {

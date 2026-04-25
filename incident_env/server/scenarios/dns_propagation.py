@@ -153,5 +153,5 @@ class DnsPropagationScenario(BaseScenario):
             correct_fix_order=["dns-resolver"],
             useful_investigation_targets=["dns-resolver", "load-balancer", "web-frontend"],
             max_optimal_steps=5,
-            max_total_reward=0.75,
+            max_total_reward=0.77,
         )

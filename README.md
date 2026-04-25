@@ -23,7 +23,7 @@ You open your laptop and see a dashboard of services — some red, some yellow. 
 
 **This environment drops an AI agent into that exact scenario.**
 
-The agent can investigate logs, check metrics, trace dependencies, diagnose root causes, and apply fixes. Every action costs simulated time, and **failures spread while the agent thinks** — creating genuine urgency and a real explore-vs-exploit tradeoff.
+The agent can investigate logs, check metrics, trace dependencies, diagnose root causes, and apply fixes. Every action costs simulated time, and **failures spread via a simulated logical clock** as the incident progresses — creating genuine urgency and a real explore-vs-exploit tradeoff.
 
 ### What Makes This Different
 
@@ -128,7 +128,9 @@ We benchmarked 3 leading models against the incidents. BlastRadius grades reason
 | **Medium** | 1.00 🟢 | *(hit rate limits)* | 0.75 🟢 |
 | **Hard** | 0.13 🔴 | 0.85 🟢 | 0.88 🟢 |
 
-> ⓘ **Note**: The environment evaluates causal reasoning strictly. For example, Llama 3.1 scored a perfect `1.0` on Medium by cleanly rolling back an upstream deployment, but struggled on Hard (`0.13`) because it correctly diagnosed and scaled the frontend load balancer but subsequently failed to properly scale the backend database.
+> ⓘ **Note**: The environment evaluates causal reasoning strictly using TF-IDF cosine similarity. For example, Llama 3.1 scored a perfect `1.0` on Medium by cleanly rolling back an upstream deployment, but struggled on Hard (`0.13`) because it correctly diagnosed and scaled the frontend load balancer but subsequently failed to properly scale the backend database.
+>
+> *Scores reflect honest normalization. The maximum possible reward in the environment acts as the denominator, so agents must earn every single decimal point.*
 > **You can verify this exact run yourself.** See the raw timestamped LLM log in [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## 🚀 Setup & Usage
@@ -196,14 +198,9 @@ with IncidentEnv("http://localhost:7860") as env:
     print(f"Reward: {result.reward}")
 ```
 
-## 📊 Baseline Scores
+## 📊 Evaluation Methodology
 
-| Task | Score | Steps | Model |
-|---|---|---|---|
-| Easy  | 0.85 | 5  | Llama 3.1 8B Instruct |
-| Medium | 0.65 | 8 | Llama 3.1 8B Instruct |
-| Hard  | 0.55 | 9  | Llama 3.1 8B Instruct |
-| **Average** | **0.68** | — | — |
+Causal chains are evaluated using TF-IDF cosine similarity. This means agents receive partial credit for paraphrased but semantically correct diagnostics, rather than brittle substring matching. Additionally, score normalization operates with accurate scenario ceilings (e.g., maximum reward 1.22 on Hard scenarios), generating mathematically honest final metrics clamped between `[0.0, 1.0]`.
 
 ## 🏗️ Architecture
 

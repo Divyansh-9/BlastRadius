@@ -161,19 +161,19 @@ h1{font-size:42px;font-weight:800;background:linear-gradient(135deg,#f8fafc,#94a
       <div class="card-diff easy">● Easy</div>
       <h3>DB Pool Exhaustion</h3>
       <p>Connection pool maxed out. API gateway returning 503s. Clear diagnostic signals.</p>
-      <div class="score easy">0.85</div>
+      <div class="score easy">0.74</div>
     </div>
     <div class="card">
       <div class="card-diff medium">● Medium</div>
       <h3>Bad Deployment Cascade</h3>
       <p>Broken JWT deploy on auth service. Payment service logs are a red herring.</p>
-      <div class="score medium">0.65</div>
+      <div class="score medium">1.00</div>
     </div>
     <div class="card">
       <div class="card-diff hard">● Hard</div>
       <h3>Thundering Herd</h3>
       <p>CDN cache miss storm. Misleading signals. Fix order is critical.</p>
-      <div class="score hard">0.55</div>
+      <div class="score hard">0.13</div>
     </div>
   </div>
 
