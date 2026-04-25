@@ -33,7 +33,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-env_path = REPO_ROOT.parent / ".env"
+env_path = REPO_ROOT / ".env"
+if not env_path.exists():
+    env_path = REPO_ROOT.parent / ".env"
 if env_path.exists():
     for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
