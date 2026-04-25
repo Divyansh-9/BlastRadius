@@ -322,12 +322,12 @@ def main():
 
     # gradient_checkpointing + LoRA setup depends on which loading path was used
     if _is_local_sft:
-        from unsloth import FastLanguageModel as _FLM
         # SFT checkpoint already has LoRA adapters (r=32, same targets) embedded.
         # Calling get_peft_model() again raises "model already has LoRA adapters".
-        # Just activate training mode on the existing LoRA layers instead.
-        _FLM.for_training(model)
-        print("SFT LoRA adapters reused for GRPO (r=32). Training mode enabled.")
+        # FastLanguageModel.for_training() does NOT exist in unsloth — only for_inference().
+        # Standard fix: enable gradient flow through the existing LoRA layers.
+        model.enable_input_require_grads()
+        print("SFT LoRA adapters reused for GRPO (r=32). Input grads enabled.")
     else:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         peft_config = LoraConfig(
