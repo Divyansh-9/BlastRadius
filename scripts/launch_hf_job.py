@@ -97,7 +97,7 @@ export PIP_BREAK_SYSTEM_PACKAGES=1
 export PIP_ROOT_USER_ACTION=ignore
 
 _ok=0
-for _attempt in $(seq 1 5); do
+for _attempt in $(seq 1 35); do
   if python3 -c "
 import os, sys
 print('LD_LIBRARY_PATH=', (os.environ.get('LD_LIBRARY_PATH') or '')[:500])
@@ -111,7 +111,7 @@ sys.exit(1)
     _ok=1
     break
   fi
-  echo "  [warmup] torch CUDA not ready (attempt $_attempt/5), sleep 2s (HF h200 802 / init race?)"
+  echo "  [warmup] torch CUDA not ready (attempt $_attempt/35), sleep 2s (HF h200 802 / init race?)"
   sleep 2
 done
 if [ "$_ok" -ne 1 ]; then
