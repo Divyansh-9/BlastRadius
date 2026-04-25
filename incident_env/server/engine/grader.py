@@ -83,10 +83,9 @@ def compute_chain_similarity(
     if not agent_chain or not truth_chain:
         return 0.0, 0, max(len(truth_chain), 1)
 
-    # Bug I: IDF from ground truth only — standard IR practice.
-    # Using both chains penalizes correct agents (shared terms get lower IDF).
-    truth_docs = [_tokenize(s) for s in truth_chain]
-    idf_map = _idf(truth_docs)
+    # Build corpus from both chains for IDF
+    all_docs = [_tokenize(s) for s in agent_chain + truth_chain]
+    idf_map = _idf(all_docs)
 
     agent_vectors = [_tfidf_vector(_tokenize(s), idf_map) for s in agent_chain]
     truth_vectors = [_tfidf_vector(_tokenize(s), idf_map) for s in truth_chain]
@@ -150,7 +149,7 @@ class RewardConfig:
     speed_bonus_max: float = 0.10
 
     # Causal chain similarity
-    chain_similarity_threshold: float = 0.45
+    chain_similarity_threshold: float = 0.20
 
 
 # Default config instance
@@ -298,9 +297,11 @@ class Grader:
                     feedback_parts.append(f"Good: Investigating {target} is relevant.")
                     self._investigated_services.add(target)
                 else:
-                    # Bug #6: Already investigated — neutral, not penalized
-                    feedback_parts.append(f"Already investigated {target}. No additional signal.")
-            elif target:  # Bug #6: Only penalize if a target was explicitly given
+                    # Re-investigation: same penalty as irrelevant to discourage step waste
+                    reward += rc.irrelevant_investigation
+                    breakdown["irrelevant_investigation"] = rc.irrelevant_investigation
+                    feedback_parts.append(f"Already investigated {target}. Wasted step.")
+            elif target:
                 reward += rc.irrelevant_investigation
                 breakdown["irrelevant_investigation"] = rc.irrelevant_investigation
                 feedback_parts.append(f"Wasted time: {target} is not directly relevant.")
@@ -352,18 +353,15 @@ class Grader:
 
         # ─── All resolved bonus ───
         if all_resolved:
-            # Bug #8: Cap decay window to max_steps (25) so hard scenarios
-            # don't give free speed bonus that never reaches zero
+            # Smooth linear speed bonus
             optimal = self._config.max_optimal_steps
-            max_steps = 25
-            decay_end = min(optimal * 2, max_steps)
             if step_number <= optimal:
                 speed_bonus = rc.speed_bonus_max
-            elif step_number >= decay_end:
+            elif step_number >= optimal * 2:
                 speed_bonus = 0.0
             else:
                 # Linear interpolation: bonus decreases from max to 0
-                progress = (step_number - optimal) / (decay_end - optimal)
+                progress = (step_number - optimal) / optimal
                 speed_bonus = round(rc.speed_bonus_max * (1.0 - progress), 4)
 
             reward += speed_bonus

@@ -253,9 +253,6 @@ class IncidentEnvironment:
         command = action.command.lower().strip()
         if command == "_parse_failure":
             self._state.step_count += 1
-            # Bug E: Time must still advance — prevent free cascade prevention
-            self._graph.tick(1)
-            self._state.time_elapsed_minutes = self._graph.time_minutes
             obs = IncidentObservation(
                 output="ERROR: Agent produced unparseable output. No action taken.",
                 services_status=self._obfuscate(self._graph.get_status_summary()),

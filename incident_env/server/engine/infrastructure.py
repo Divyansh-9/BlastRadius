@@ -481,17 +481,12 @@ class ServiceGraph:
         if svc.fix_order <= 0:
             return True, None
         for other in self._services.values():
-            if other.name == svc.name:
-                continue
-            # Bug J: Root cause services with fix_order=0 always block higher-order fixes
-            is_blocker = (
-                other.status != ServiceStatus.HEALTHY
-                and (
-                    (other.fix_order > 0 and other.fix_order < svc.fix_order)
-                    or (other.is_root_cause and svc.fix_order > 0)
-                )
-            )
-            if is_blocker:
+            if (
+                other.name != svc.name
+                and other.fix_order > 0
+                and other.fix_order < svc.fix_order
+                and other.status != ServiceStatus.HEALTHY
+            ):
                 return False, other.name
         return True, None
 
