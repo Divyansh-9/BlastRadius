@@ -76,115 +76,98 @@ except Exception as _e:
 
 JOB_SCRIPT = f"""
 set -euo pipefail
-# huggingface_hub reads HF_DEBUG at *first import*
-export HF_DEBUG=1
 export PYTHONUNBUFFERED=1
-export PYTHONIOENCODING=utf-8
-
-# Container GPU runtime
-export NVIDIA_VISIBLE_DEVICES="${{NVIDIA_VISIBLE_DEVICES:-all}}"
-export NVIDIA_DRIVER_CAPABILITIES="${{NVIDIA_DRIVER_CAPABILITIES:-compute,utility}}"
-export CUDA_MODULE_LOADING="${{CUDA_MODULE_LOADING:-EAGER}}"
-
-# Prefer bundled CUDA libs from common locations
-for _lib in /usr/local/cuda/lib64 /usr/local/cuda-12.4/lib64 /usr/local/cuda-13.0/lib64 /usr/lib/x86_64-linux-gnu; do
-  if [ -d "$_lib" ]; then
-    export LD_LIBRARY_PATH="$_lib:${{LD_LIBRARY_PATH:-}}"
-  fi
-done
-
-echo "==> System + GPU probe"
-nvidia-smi || true
-sleep 3
-
+export CUDA_MODULE_LOADING=EAGER
 export PIP_BREAK_SYSTEM_PACKAGES=1
 export PIP_ROOT_USER_ACTION=ignore
 
-echo "===> Checking CUDA device files:"
-ls /dev/nvidia* 2>/dev/null || echo "  (no /dev/nvidia* found)"
+echo "========================================================"
+echo "  BLASTRADIUS H200 TRAINING — v8 (stage-safe)"
+echo "========================================================"
 
-echo "===> WARMUP: Waiting for H200 Driver Init..."
+echo "==> nvidia-smi"
+nvidia-smi
+
+echo "==> CUDA warmup (Error 802 race fix — up to 8 retries)"
+ldconfig 2>/dev/null || true
+sleep 3
 _ok=0
-for _attempt in $(seq 1 12); do
+for _attempt in $(seq 1 8); do
   if python3 -c "
 import os, sys
+os.environ['CUDA_MODULE_LOADING'] = 'EAGER'
 import torch
 if torch.cuda.is_available():
-    print('device0', torch.cuda.get_device_name(0))
+    print('CUDA ready:', torch.cuda.get_device_name(0))
     sys.exit(0)
 sys.exit(1)
-" 2>/dev/null; then
+"; then
     _ok=1
-    echo "  [warmup] CUDA IS READY!"
     break
   fi
-  echo "  [warmup] torch CUDA not ready (attempt $_attempt/12), sleep 5s..."
+  echo "  [warmup] CUDA not ready (attempt $_attempt/8), sleep 5s..."
+  ldconfig 2>/dev/null || true
+  sleep 5
+done
+if [ "$_ok" -ne 1 ]; then
+  echo "FATAL: CUDA not available after 8 attempts"
+  exit 1
+fi
+
+echo "==> Installing git + build-essential"
+apt-get update -qq && apt-get install -y -qq git build-essential
+
+echo "==> Cloning BlastRadius repo"
+[ -d /workspace/.git ] && rm -rf /workspace
+git clone --depth 1 --branch main https://github.com/Divyansh-9/BlastRadius.git /workspace
+cd /workspace
+
+echo "==> Installing deps (keeping docker torch 2.6.0)"
+python3 -m pip install --quiet --upgrade pip
+
+# Pin torch so NOTHING replaces it
+TORCH_VER=$(python3 -c "import torch; print(torch.__version__)" | tr -d "[:space:]")
+echo "torch==${{TORCH_VER}}" > /tmp/pin.txt
+export PIP_CONSTRAINT=/tmp/pin.txt
+
+# Exact version trio from v7 that passed Stage 1 on H200
+pip install --quiet "transformers==4.51.3"
+pip install --quiet "trl==0.13.0"
+pip install --quiet "peft==0.13.2"
+pip install --quiet "bitsandbytes>=0.43.0"
+pip install --quiet "datasets>=2.18.0"
+pip install --quiet "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install --quiet wandb huggingface_hub python-dotenv plotly networkx
+
+# torchao conflicts with torch 2.6 (unsloth-zoo requires it, but bnb handles 4-bit)
+pip uninstall -y torchao 2>/dev/null || true
+
+echo "==> CUDA re-warmup after pip"
+ldconfig 2>/dev/null || true
+sleep 3
+for _attempt in $(seq 1 8); do
+  if python3 -c "import torch; assert torch.cuda.is_available(); print('CUDA OK')"; then break; fi
+  echo "  [post-pip warmup] attempt $_attempt/8..."
   ldconfig 2>/dev/null || true
   sleep 5
 done
 
-if [ "$_ok" -ne 1 ]; then
-  echo "FATAL: torch sees no CUDA."
-  exit 1
-fi
-
-echo "==> Apt: git + build essentials"
-if ! command -v git &>/dev/null; then
-  apt-get update -qq
-  apt-get install -y -qq git
-fi
-apt-get update -qq
-apt-get install -y -qq build-essential || true
-
-echo "==> Cloning BlastRadius main"
-if [ -d /workspace/.git ]; then rm -rf /workspace; fi
-git clone --depth 1 --branch main https://github.com/Divyansh-9/BlastRadius.git /workspace
-cd /workspace
-
-echo "==> pip: Upgrading base"
-python3 -m pip install --quiet --upgrade pip wheel
-
-echo "  ==> Pinning torch+torchvision to prevent accidental upgrade"
-TORCH_VER=$(python3 -c "import torch; print(torch.__version__)" | tr -d '[:space:]')
-TVISION_VER=$(python3 -c "import torchvision; print(torchvision.__version__)" 2>/dev/null | tr -d '[:space:]' || echo "")
-echo "torch==$TORCH_VER" > /tmp/torch_pinned
-if [ -n "$TVISION_VER" ]; then
-  echo "torchvision==$TVISION_VER" >> /tmp/torch_pinned
-fi
-export PIP_CONSTRAINT=/tmp/torch_pinned
-echo "  Pinned: $(cat /tmp/torch_pinned)"
-
-echo "  ==> Clone+patch unsloth (bypass conda setuptools license error)"
-git clone --depth 1 https://github.com/unslothai/unsloth.git /tmp/unsloth_src
-sed -i 's/^license = "Apache-2.0"/license = {{text = "Apache-2.0"}}/' /tmp/unsloth_src/pyproject.toml
-grep '^license' /tmp/unsloth_src/pyproject.toml
-# --no-deps: prevents unsloth from pulling torch 2.11+ which breaks torchvision
-python3 -m pip install --quiet --no-deps /tmp/unsloth_src
-# Install unsloth's non-torch runtime deps
-python3 -m pip install --quiet \\
-    "accelerate>=0.26.0" \\
-    "tokenizers>=0.15.0" \\
-    "sentencepiece>=0.1.99" \\
-    "packaging>=23.0" || true
-python3 -m pip install --quiet "xformers" 2>&1 | tail -3 || echo "WARNING: xformers not available"
-# Verify: unsloth must import, torch must NOT have been upgraded
-python3 -c "import torch, torchvision; print('torch='+torch.__version__+' tv='+torchvision.__version__); from unsloth import FastLanguageModel; print('unsloth OK')" || {{ echo "FATAL: unsloth verify failed"; exit 1; }}
-
-echo "  ==> Installing BlastRadius deps (SFT + GRPO, with peft<0.14 + transformers<4.50 pinned)"
-# pyproject.toml now pins peft<0.14.0 and transformers<4.50.0 to fix EmbeddingParallel ImportError
-python3 -m pip install --quiet -e ".[train_sft,train_grpo]"
-
-ldconfig 2>/dev/null || true
-
-echo "==> post-pip: torch check"
-python3 <<'PY'
+echo "==> Verifying imports"
+python3 << 'VERIFY'
 import torch
-print("torch", torch.__version__, "cuda", torch.version.cuda, "is_available", torch.cuda.is_available())
-assert torch.cuda.is_available(), "CUDA broke after pip install"
-print("ok", torch.cuda.get_device_name(0))
-PY
+print(f"torch: {{torch.__version__}} | CUDA: {{torch.cuda.is_available()}}")
+assert torch.cuda.is_available()
+print(f"GPU: {{torch.cuda.get_device_name(0)}}")
+from unsloth import FastLanguageModel, is_bfloat16_supported
+print("unsloth: OK")
+from trl import SFTTrainer, SFTConfig
+print("trl: OK")
+import wandb
+print("wandb: OK")
+print("=== ALL IMPORTS OK ===")
+VERIFY
 
-echo "==> Stage 1: SFT training"
+echo "==> Stage 1: SFT Training"
 python3 -u -m agent.train_sft \\
     --model unsloth/Qwen2.5-14B-Instruct-bnb-4bit \\
     --data sft_data/expert_trajectories.jsonl \\
@@ -193,8 +176,33 @@ python3 -u -m agent.train_sft \\
 echo "==> Validate SFT checkpoint"
 python3 -m agent.validate_save --model models/sft_checkpoint
 
-echo "==> Stage 2: GRPO training (Native)"
-# Note: --use-vllm omitted for stability on H200.
+echo "==> *** Pushing SFT checkpoint to Hub (safety save before GRPO) ***"
+python3 << 'PUSH_SFT'
+import os
+from huggingface_hub import HfApi
+api = HfApi(token=os.environ.get("HF_TOKEN"))
+hub_id = "{HUB_MODEL_ID}"
+# Create repo if missing
+api.create_repo(repo_id=hub_id, exist_ok=True, repo_type="model", private=False)
+# Upload SFT checkpoint folder
+api.upload_folder(
+    folder_path="models/sft_checkpoint",
+    repo_id=hub_id,
+    repo_type="model",
+    commit_message="Stage 1 SFT checkpoint — auto-saved before GRPO",
+    path_in_repo="sft_checkpoint",
+    ignore_patterns=["*.tmp"],
+)
+print(f"SFT checkpoint pushed to https://huggingface.co/{{hub_id}}/tree/main/sft_checkpoint")
+PUSH_SFT
+
+echo "==> Installing vLLM (after SFT, torch still pinned)"
+pip install --quiet "vllm>=0.5.0"
+pip uninstall -y torchao 2>/dev/null || true
+ldconfig 2>/dev/null || true
+sleep 3
+
+echo "==> Stage 2: GRPO Training"
 python3 -u -m agent.train_grpo \\
     --model models/sft_checkpoint \\
     --data sft_data/expert_trajectories.jsonl \\
@@ -205,11 +213,11 @@ python3 -u -m agent.train_grpo \\
     --hub-model-id {HUB_MODEL_ID} \\
     --max-runtime-hours 4.0
 
-echo "==> Validate final checkpoint (GRPO -> SFT fallback)"
+echo "==> Validate GRPO checkpoint"
 python3 -m agent.validate_save --model models/grpo_checkpoint \\
     || python3 -m agent.validate_save --model models/sft_checkpoint
 
-echo "==> Done. Model on https://huggingface.co/{HUB_MODEL_ID}"
+echo "==> ALL DONE — model at https://huggingface.co/{HUB_MODEL_ID}"
 """.strip()
 
 cmd = [
