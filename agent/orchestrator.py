@@ -5,7 +5,7 @@ This replaces the old dual-model (Scout 1B + Commander 3B) design.
 
 HOW IT WORKS:
 ─────────────
-One model (Qwen2.5-7B-Instruct, 4-bit) plays both roles using different
+One model (Qwen2.5-14B-Instruct, 4-bit) plays both roles using different
 system prompts. For each environment step:
 
   Step 1: Model receives SCOUT_SYSTEM_PROMPT + raw observation
@@ -17,7 +17,7 @@ WHY THIS IS BETTER THAN TWO MODELS:
 ────────────────────────────────────
 1. Credit assignment: GRPO trains ONE set of weights for both roles.
    When triage improves, decisions improve automatically.
-2. VRAM: ~4.5GB inference (7B 4-bit) vs ~9GB for two models.
+2. VRAM: ~14GB inference (14B 4-bit) vs ~28GB for two models.
 3. Latency: Both prompts can share KV cache context.
 4. Self-improving: Both roles get better via RL, not just the Commander.
 
@@ -222,10 +222,10 @@ class MATPOOrchestrator:
         self,
         api_base: str = "http://localhost:8000/v1",
         api_key: str = "not-needed",
-        # Bug G fix: default to the 7B model the training pipeline actually
+        # Default to the 14B 4-bit model the training pipeline actually
         # produces. The old 32B default OOMs A100 80GB at full precision and
         # silently misled anyone running the orchestrator/benchmark from CLI.
-        model_name: str = "unsloth/Qwen2.5-7B-Instruct-bnb-4bit",
+        model_name: str = "unsloth/Qwen2.5-14B-Instruct-bnb-4bit",
         env_base_url: str = "http://localhost:7860",
         temperature: float = 0.3,
         max_tokens: int = 512,
@@ -585,7 +585,7 @@ def main():
     parser = argparse.ArgumentParser(description="MATPO Orchestrator for BlastRadius")
     parser.add_argument("--task", default="easy", help="Scenario task_id (easy, medium, hard, etc.)")
     parser.add_argument("--endpoint", default=os.environ.get("API_BASE_URL", "http://localhost:8000/v1"))
-    parser.add_argument("--model", default=os.environ.get("MODEL_NAME", "unsloth/Qwen2.5-7B-Instruct-bnb-4bit"))
+    parser.add_argument("--model", default=os.environ.get("MODEL_NAME", "unsloth/Qwen2.5-14B-Instruct-bnb-4bit"))
     parser.add_argument("--env-url", default=os.environ.get("ENV_BASE_URL", "http://localhost:7860"))
     parser.add_argument("--api-key", default=os.environ.get("HF_TOKEN", "not-needed"))
     parser.add_argument("--save-rollouts", default=None, help="Directory to save rollout trajectories")

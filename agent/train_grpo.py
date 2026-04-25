@@ -3,13 +3,16 @@ MATPO GRPO Training Script
 ==========================
 Phase 3 of the BlastRadius Reinforcement Learning Pipeline.
 
-This script implements Group Relative Policy Optimization (GRPO) on a 
-6GB VRAM constraint using Unsloth's integrated vLLM (`fast_inference=True`).
+This script implements Group Relative Policy Optimization (GRPO) using
+Unsloth's integrated vLLM (`fast_inference=True`) for co-located rollout +
+training. Three hardware profiles are supported:
 
-Memory Bottleneck Details (Option A + E Hybrid Strategy):
-G=4 generations per prompt consumes ~1.8GB of KV Cache. We combine this
-with 4-bit quantization, LoRA r=32, and 8-bit AdamW to squeeze the entire 
-training loop into ~4.5GB VRAM, leaving 1.5GB of safety headroom.
+  - 6gb  : 4-bit base + G=4 generations + grad-accum=4   → fits 6GB consumer GPU
+  - a10  : 4-bit base + G=8 generations + grad-accum=2   → fits 24GB A10
+  - a100 : bf16 base  + G=16 generations + grad-accum=2  → A100 80GB profile
+
+For the A100 profile with a 14B model, peak VRAM is ~66GB
+(28GB weights shared with vLLM + 28GB KV pool + 10GB train activations).
 
 Reward Functions:
 1. `format_reward_func`: Checks for adherence to MATPO dual-role tags.
@@ -386,10 +389,12 @@ def main():
         
         # Generation limits
         num_generations=num_generations,
-        # FIX: 1024 prompt + 512 completion. Hard scenarios hit 800-900 tokens
-        # on prompt alone at 512 limit — model was seeing truncated state.
+        # 1024 prompt + 768 completion. The 14B's <think> blocks run longer
+        # than the 7B's, and hard-scenario commander reasoning was clipping
+        # at 512 — losing the last 1-2 sentences of CoT and sometimes the
+        # closing </action> tag (which then fails the format-reward JSON parse).
         max_prompt_length=1024,
-        max_completion_length=512,
+        max_completion_length=768,
 
         # Optimizer limits
         per_device_train_batch_size=per_device_train_batch_size,
@@ -435,7 +440,12 @@ def main():
     _trainer_for_emergency_save = trainer
 
     print("\nStarting GRPO Training...")
-    print("VRAM usage should peak at ~4.5GB. Generating rollout batches...")
+    if args.hardware_profile == "a100":
+        print("VRAM usage should peak at ~66GB on A100 80GB. Generating rollout batches...")
+    elif args.hardware_profile == "a10":
+        print("VRAM usage should peak at ~22GB on A10 24GB. Generating rollout batches...")
+    else:
+        print("VRAM usage should peak at ~4.5GB. Generating rollout batches...")
     
     # Auto-recover from Hub if fresh container (no local checkpoint)
     if args.hub_model_id and not os.path.exists(args.output):
