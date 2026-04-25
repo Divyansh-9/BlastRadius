@@ -21,33 +21,31 @@ import os
 import sys
 import argparse
 import json
-import re
 import concurrent.futures
 import signal
-import numpy as np
-from typing import List, Dict, Any
+from typing import List
 from pathlib import Path
 
 try:
-    import wandb
+    import wandb # type: ignore
 except ImportError:
     wandb = None
 
-from datasets import load_dataset
+from datasets import load_dataset # type: ignore
 try:
-    from transformers.trainer_callback import TrainerCallback
+    from transformers.trainer_callback import TrainerCallback # type: ignore
 except ImportError:
     TrainerCallback = object
 
 try:
-    from unsloth import FastLanguageModel, PatchFastRL, is_bfloat16_supported
+    from unsloth import FastLanguageModel, PatchFastRL, is_bfloat16_supported # type: ignore
     # Patch TRL for ultra-fast/memory-optimized GRPO
     PatchFastRL("GRPO", FastLanguageModel)
 except ImportError:
     print("Please install unsloth GRPO: pip install unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git")
     sys.exit(1)
 
-from trl import GRPOConfig, GRPOTrainer
+from trl import GRPOConfig, GRPOTrainer # type: ignore
 
 # Add project root to path to access the environment
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -296,7 +294,7 @@ def main():
         # Push to hub (blocking, because we are about to die)
         if _args_for_emergency_save.hub_model_id:
             try:
-                from huggingface_hub import HfApi
+                from huggingface_hub import HfApi # type: ignore
                 api = HfApi()
                 api.upload_folder(
                     folder_path=emergency_dir,

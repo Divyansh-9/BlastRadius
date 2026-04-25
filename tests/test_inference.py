@@ -18,7 +18,7 @@ import re
 import types
 import unittest.mock as mock
 from contextlib import redirect_stdout
-from typing import List, Dict, Any
+from typing import List, Dict
 
 import pytest
 
@@ -93,7 +93,7 @@ class TestLogFormatters:
         """Secondary JSON detail line must be valid JSON."""
         inf.log_step(step=1, action='{"command":"check_status"}', reward=0.1, done=True)
         out = capsys.readouterr().out
-        json_lines = [l for l in out.splitlines() if l.startswith("{")]
+        json_lines = [line for line in out.splitlines() if line.startswith("{")]
         assert len(json_lines) >= 1
         data = json.loads(json_lines[0])
         assert data["type"] == "[STEP]"
@@ -102,7 +102,7 @@ class TestLogFormatters:
     def test_log_end_json_parseable(self, inf, capsys):
         inf.log_end("hard", success=False, steps=5, score=0.3, rewards=[0.0])
         out = capsys.readouterr().out
-        json_lines = [l for l in out.splitlines() if l.startswith("{")]
+        json_lines = [line for line in out.splitlines() if line.startswith("{")]
         assert len(json_lines) >= 1
         data = json.loads(json_lines[0])
         assert data["type"] == "[END]"
@@ -340,8 +340,8 @@ class TestRealRunStructure:
         out = capsys.readouterr().out
         # get_model_action falls back to {"command": "check_status"} on bad JSON.
         # That action is serialised into the secondary [STEP] JSON line.
-        json_lines = [l for l in out.splitlines() if l.startswith("{") and "STEP" in l]
-        assert any("check_status" in l for l in json_lines), (
+        json_lines = [line for line in out.splitlines() if line.startswith("{") and "STEP" in line]
+        assert any("check_status" in line for line in json_lines), (
             f"Expected check_status fallback in [STEP] JSON lines, got:\n{out[:600]}"
         )
 
@@ -418,7 +418,6 @@ class TestBenchmarkCredibility:
             gradio_mock.mount_gradio_app = mock.MagicMock()
 
             with mock.patch.dict("sys.modules", {"gradio": gradio_mock, "gradio.themes": gradio_mock.themes}):
-                import importlib
                 if "app_ui" in sys.modules:
                     del sys.modules["app_ui"]
                 import app_ui

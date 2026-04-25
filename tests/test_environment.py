@@ -534,7 +534,7 @@ class TestAntiCheat:
         env.reset(task_id="easy")
 
         # First wrong diagnosis
-        r1 = env.step(IncidentAction(
+        env.step(IncidentAction(
             command="diagnose",
             parameters={"root_cause": "wrong-service", "causal_chain": [], "confidence": 0.5},
         ))

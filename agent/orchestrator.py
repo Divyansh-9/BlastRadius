@@ -40,7 +40,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
-import requests
+import requests # type: ignore
 from openai import OpenAI
 
 # Add project root to path so we can import incident_env
@@ -50,8 +50,6 @@ from agent.prompts import (
     SCOUT_SYSTEM_PROMPT,
     COMMANDER_SYSTEM_PROMPT,
     SCOUT_TAGS,
-    COMMANDER_TAGS,
-    THINK_TAGS,
 )
 
 
@@ -529,7 +527,8 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
                 yield observation, scout_log, cmdr_log, cumulative_reward, False
             
             triage = extract_between_tags(scout_full, *SCOUT_TAGS)
-            if not triage: triage = scout_full[:500]
+            if not triage: 
+                triage = scout_full[:500]
 
             cmdr_log += f"\n\n{'='*20}\n🧠 STEP {step_num} | COMMANDER\n{'='*20}\n"
             yield observation, scout_log, cmdr_log, cumulative_reward, False

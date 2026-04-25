@@ -382,9 +382,7 @@ class Grader:
 
     def _grade_diagnosis(self, params: Dict[str, Any]) -> tuple:
         """Grade a diagnosis submission with causal chain evaluation."""
-        reward = 0.0
-        breakdown = {}
-        feedback_parts = []
+
         rc = self._rc
 
         if self._diagnosis_submitted:

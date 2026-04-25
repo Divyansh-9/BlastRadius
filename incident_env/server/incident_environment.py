@@ -113,7 +113,7 @@ class IncidentEnvironment:
         if scenario_cls is None:
             raise ValueError(f"Cannot restore: unknown task_id '{task_id}'")
 
-        self._scenario = scenario_cls()
+        self._scenario = scenario_cls() # type: ignore
         self._graph = self._scenario.build_service_graph()
         self._eval_mode = False
         self._obf_map = {}
@@ -177,7 +177,7 @@ class IncidentEnvironment:
         if scenario_cls is None:
             raise ValueError(f"Unknown task_id '{task_id}'. Choose from: {list(SCENARIOS.keys())}")
 
-        self._scenario = scenario_cls()
+        self._scenario = scenario_cls() # type: ignore
         self._graph = self._scenario.build_service_graph()
         self._eval_mode = eval_mode
         self._obf_map = {}
@@ -428,6 +428,7 @@ class IncidentEnvironment:
         if command == "diagnose":
             return self._cmd_diagnose(params), False
 
+        assert self._graph is not None
         if command == "restart_service":
             text, success = self._graph.restart_service(target)
             return text, success
@@ -444,6 +445,7 @@ class IncidentEnvironment:
 
     def _cmd_check_status(self) -> str:
         """Show status of all services."""
+        assert self._graph is not None
         lines = ["=== System Status Dashboard ===", ""]
         for name, svc in self._graph.get_all_services().items():
             icon = {"healthy": "🟢", "degraded": "🟡", "down": "🔴", "restarting": "🔄"}.get(
@@ -464,6 +466,7 @@ class IncidentEnvironment:
 
     def _cmd_check_logs(self, target: str) -> str:
         """Show logs for a specific service."""
+        assert self._graph is not None
         svc = self._graph.get_service(target)
         if svc is None:
             return (
@@ -474,6 +477,7 @@ class IncidentEnvironment:
 
     def _cmd_check_metrics(self, target: str) -> str:
         """Show metrics dashboard for a specific service."""
+        assert self._graph is not None
         svc = self._graph.get_service(target)
         if svc is None:
             return (
@@ -484,6 +488,7 @@ class IncidentEnvironment:
 
     def _cmd_check_dependencies(self) -> str:
         """Show the service dependency graph."""
+        assert self._graph is not None
         return self._graph.get_dependency_text()
 
     def _cmd_diagnose(self, params: Dict) -> str:

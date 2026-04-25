@@ -18,8 +18,8 @@ Usage:
 """
 
 import json
+import requests # type: ignore
 import os
-import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -215,13 +215,15 @@ Respond with ONE JSON object — your next action."""
                 continue
             print(f"[DEBUG] Model request failed: {exc}", flush=True)
             return {"command": "check_status"}
+    
+    return {"command": "check_status"}
 
 
 # ---------------------------------------------------------------------------
 # Environment interaction (via HTTP)
 # ---------------------------------------------------------------------------
 
-import requests
+
 
 def env_reset(base_url: str, task_id: str) -> Dict[str, Any]:
     resp = requests.post(f"{base_url}/reset", json={"task_id": task_id})
@@ -358,7 +360,7 @@ def main():
         return
 
     print(f"{'='*60}", flush=True)
-    print(f"IT Incident Response Environment - Baseline Inference", flush=True)
+    print("IT Incident Response Environment - Baseline Inference", flush=True)
     print(f"Model: {MODEL_NAME}", flush=True)
     print(f"API:   {API_BASE_URL}", flush=True)
     print(f"Env:   {ENV_BASE_URL}", flush=True)
@@ -385,7 +387,7 @@ def main():
     # Summary
     # ------------------------------------------------------------------
     print(f"\n{'='*60}", flush=True)
-    print(f"RESULTS SUMMARY", flush=True)
+    print("RESULTS SUMMARY", flush=True)
     print(f"{'='*60}", flush=True)
     for task_id, score in scores.items():
         tag = "[HIGH]" if score >= 0.7 else "[MED] " if score >= 0.4 else "[LOW] "

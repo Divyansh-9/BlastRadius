@@ -43,12 +43,12 @@ def validate(model_path: str, max_new_tokens: int = 80) -> bool:
 
     # -- 1. Import Unsloth (same way the training scripts do) --
     try:
-        from unsloth import FastLanguageModel
+        from unsloth import FastLanguageModel # type: ignore
     except ImportError:
         print("❌ Unsloth not installed. Run: pip install unsloth")
         return False
 
-    import torch
+    import torch # type: ignore
 
     # -- 2. Load checkpoint --
     print("⏳ Loading checkpoint (4-bit)...")

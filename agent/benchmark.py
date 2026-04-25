@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import argparse
 from datetime import datetime
@@ -126,7 +125,7 @@ def main():
         scenarios = args.scenarios
 
     print(f"\\n{'='*60}")
-    print(f"  BLASTRADIUS AUTO-BENCHMARK")
+    print("  BLASTRADIUS AUTO-BENCHMARK")
     print(f"{'='*60}")
     print(f"Model: {args.model}")
     print(f"Target Scenarios: {len(scenarios)}")
@@ -181,7 +180,7 @@ def main():
 
     # Summary
     print(f"\\n{'='*60}")
-    print(f"  BENCHMARK COMPLETE")
+    print("  BENCHMARK COMPLETE")
     print(f"{'='*60}")
     avg_score = sum(r['score'] for r in results) / len(results)
     resolved_count = sum(1 for r in results if r['resolved'])

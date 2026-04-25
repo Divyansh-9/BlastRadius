@@ -6,8 +6,7 @@ Uses ProcessPoolExecutor to bypass the GIL and evaluate episodes across CPU core
 Essential for standard reinforcement learning frameworks (e.g. PPO, A2C).
 """
 import concurrent.futures
-import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from incident_env.server.incident_environment import IncidentEnvironment
 from incident_env.models import IncidentAction
@@ -35,7 +34,7 @@ def _worker_step(snapshot: dict, action_dict: dict) -> Dict[str, Any]:
     
     action = IncidentAction(
         command=action_dict.get("command", "check_status"),
-        target=action_dict.get("target"),
+        target=action_dict.get("target") or "",
         parameters=action_dict.get("parameters", {})
     )
     
@@ -62,7 +61,7 @@ class VectorEnv:
     def __init__(self, num_envs: int):
         self.num_envs = num_envs
         self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=num_envs)
-        self.snapshots = [None] * num_envs
+        self.snapshots: List[Dict[str, Any]] = [{}] * num_envs
         
     def reset(self, task_ids: List[str], eval_mode: bool = False) -> List[Dict[str, Any]]:
         """
