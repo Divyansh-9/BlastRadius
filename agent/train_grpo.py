@@ -60,6 +60,12 @@ from agent.prompts import (
 )
 
 
+# Module-level sentinels for the SIGTERM emergency save handler.
+# These are populated inside main() and read by preemption_handler().
+_model_for_emergency_save = None
+_trainer_for_emergency_save = None
+_args_for_emergency_save = None
+
 # ─────────────────────────────────────────────────────────────
 # Reward Functions (The RL Signal)
 # ─────────────────────────────────────────────────────────────
