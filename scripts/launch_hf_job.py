@@ -66,6 +66,10 @@ DOCKER_IMAGE = os.environ.get("HF_JOB_IMAGE", _default_image(FLAVOR))
 
 JOB_SCRIPT = f"""
 set -euo pipefail
+# huggingface_hub reads HF_DEBUG at *first import* — set before any Python runs.
+export HF_DEBUG=1
+export PYTHONUNBUFFERED=1
+export PYTHONIOENCODING=utf-8
 
 # ── Container GPU runtime (K8s / HF Jobs) ─────────────────
 export NVIDIA_VISIBLE_DEVICES="${{NVIDIA_VISIBLE_DEVICES:-all}}"
@@ -156,7 +160,6 @@ print("ok", torch.cuda.get_device_name(0))
 PY
 
 echo "==> Stage 1: SFT training"
-export PYTHONIOENCODING=utf-8
 python3 -u -m agent.train_sft \\
     --model unsloth/Qwen2.5-14B-Instruct-bnb-4bit \\
     --data sft_data/expert_trajectories.jsonl \\
