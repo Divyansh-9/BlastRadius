@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-04-25] - Blog Documentation
+
+### Added
+- `blog.md`: Comprehensive story-driven technical blog post covering the problem statement, environment design, reward function, MATPO agent architecture, training pipeline, benchmark results, and future directions.
+
+---
+
 ## [2026-04-24] - Hackathon Freeze
 
 ### Added

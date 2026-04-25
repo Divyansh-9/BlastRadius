@@ -15,6 +15,8 @@ pinned: false
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+> 📖 **Read the deep-dive blog post**: [blog.md](blog.md) — covers the full problem, environment design, reward math, training pipeline, and benchmark results in one place.
+
 ## 🎯 What Is This?
 
 It's 3 AM. Your phone blows up. The website is down. Users are complaining.
