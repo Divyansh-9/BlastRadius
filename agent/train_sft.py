@@ -140,7 +140,7 @@ def main():
         output_dir=args.output,
         optim="adamw_torch_fused", 
         dataset_text_field="text",
-        max_seq_length=max_seq_length,
+        max_length=max_seq_length,
         save_strategy="steps",
         save_steps=100,
         save_total_limit=2,
