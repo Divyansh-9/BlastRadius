@@ -23,6 +23,7 @@ import argparse
 import json
 import concurrent.futures
 import signal
+import time
 from typing import List
 from pathlib import Path
 
@@ -161,7 +162,7 @@ def environment_reward_func(completions: List[str], role: List[str], task_id: Li
     global _env_executor
     if _env_executor is None:
         max_workers = os.cpu_count() or 4
-        _env_executor = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
+        _env_executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max_workers))
 
     futures = [
         _env_executor.submit(evaluate_single_env, comp, current_role, tid, snapshot)
@@ -324,6 +325,7 @@ def main():
         wandb.init(
             project=args.wandb_project,
             entity=args.wandb_entity,
+            name=f"grpo-{Path(args.model).name}-G{num_generations}-{int(time.time())}",
             config={
                 "model": args.model,
                 "hardware_profile": args.hardware_profile,
@@ -387,9 +389,14 @@ def main():
     print("\nStarting GRPO Training...")
     print("VRAM usage should peak at ~4.5GB. Generating rollout batches...")
     
-    # Use resume_from_checkpoint if we have a hub ID and want to continue
-    resume = bool(args.hub_model_id) 
-    trainer.train(resume_from_checkpoint=resume if os.path.exists(args.output) else False)
+    # Auto-recover from Hub if fresh container (no local checkpoint)
+    if args.hub_model_id and not os.path.exists(args.output):
+        print("Fresh container detected -- pulling checkpoint from Hub...")
+        from huggingface_hub import snapshot_download  # type: ignore
+        snapshot_download(repo_id=args.hub_model_id, local_dir=args.output)
+
+    resume = os.path.exists(args.output)
+    trainer.train(resume_from_checkpoint=resume)
 
     # 5. Save Finished Model
     print(f"\nTraining Complete. Saving to {args.output}")
