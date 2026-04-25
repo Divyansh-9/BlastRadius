@@ -48,6 +48,11 @@ HUB_MODEL_ID   = os.environ["HUB_MODEL_ID"]
 
 JOB_SCRIPT = f"""
 set -euo pipefail
+
+echo "==> Installing git (pytorch image lacks it)"
+apt-get update -qq
+apt-get install -y -qq git
+
 echo "==> Cloning BlastRadius main"
 git clone --branch main https://github.com/Divyansh-9/BlastRadius.git /workspace
 cd /workspace
@@ -87,10 +92,13 @@ python -m agent.validate_save --model models/grpo_checkpoint \\
 echo "==> Done. Model on https://huggingface.co/{HUB_MODEL_ID}"
 """.strip()
 
+FLAVOR  = os.environ.get("HF_JOB_FLAVOR", "h200")
+TIMEOUT = os.environ.get("HF_JOB_TIMEOUT", "5h")
+
 cmd = [
     "hf", "jobs", "run",
-    "--flavor", "a100-large",
-    "--timeout", "6h",
+    "--flavor", FLAVOR,
+    "--timeout", TIMEOUT,
     "--detach",
     "--secrets", f"HF_TOKEN={HF_TOKEN}",
     "--secrets", f"WANDB_API_KEY={WANDB_API_KEY}",
@@ -102,7 +110,7 @@ cmd = [
 ]
 
 print("=" * 60)
-print("Launching HF Job: a100-large, ~5h timeout")
+print(f"Launching HF Job: {FLAVOR}, {TIMEOUT} timeout")
 print(f"  WANDB:  https://wandb.ai/{WANDB_ENTITY}/{WANDB_PROJECT}")
 print(f"  MODEL:  https://huggingface.co/{HUB_MODEL_ID}")
 print("=" * 60)
