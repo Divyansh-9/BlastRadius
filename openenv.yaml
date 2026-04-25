@@ -4,7 +4,7 @@ type: incident_response
 runtime: docker
 app: incident_env.server.app:app
 port: 7860
-hf_space: https://huggingface.co/spaces/Idred/BlastRadius-OpenEnv
+hf_space: https://huggingface.co/spaces/ainey1116/incident-response-env
 github: https://github.com/Divyansh-9/BlastRadius
 description: >
   IT Incident Response Environment — an OpenEnv-compliant RL environment
