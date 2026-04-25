@@ -7,7 +7,7 @@ name = "incident-response-env"
 version = "1.0.0"
 description = "IT Incident Response OpenEnv: an RL environment for SRE/DevOps agent training"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.104.0",
