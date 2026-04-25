@@ -4,11 +4,74 @@ type: incident_response
 runtime: docker
 app: incident_env.server.app:app
 port: 7860
+hf_space: https://huggingface.co/spaces/Idred/BlastRadius-OpenEnv
+github: https://github.com/Divyansh-9/BlastRadius
 description: >
   IT Incident Response Environment — an OpenEnv-compliant RL environment
   that simulates production infrastructure failures. Agents diagnose
   cascading service outages, identify root causes via causal reasoning,
   and apply fixes under time pressure as failures spread.
+
+reward_range: [0.0, 1.0]
+
+observation_schema:
+  type: object
+  properties:
+    output:
+      type: string
+      description: Human-readable command output (logs, metrics, status)
+    services_status:
+      type: object
+      description: "Map of service_name -> status (HEALTHY | DEGRADED | DOWN)"
+    active_alerts:
+      type: array
+      items:
+        type: string
+      description: Currently firing alert messages
+    cascade_events:
+      type: array
+      items:
+        type: object
+      description: Structured list of active failure cascade events
+    time_elapsed_minutes:
+      type: integer
+      description: Simulated clock in minutes since incident start
+    incident_severity:
+      type: string
+      enum: [P1, P2, P3]
+      description: Computed incident severity
+    services_at_risk:
+      type: array
+      items:
+        type: string
+      description: Services trending toward failure based on cascade rules
+
+action_schema:
+  type: object
+  required: [command]
+  properties:
+    command:
+      type: string
+      enum:
+        - check_status
+        - check_logs
+        - check_metrics
+        - check_dependencies
+        - diagnose
+        - restart_service
+        - rollback_deploy
+        - scale_service
+      description: The action command to execute
+    target:
+      type: string
+      description: Target service name (required for all non-check_status commands)
+    parameters:
+      type: object
+      description: >
+        Additional action parameters.
+        For diagnose: {root_cause, causal_chain, confidence}
+        For scale_service: {replicas}
+
 tasks:
   - id: easy
     name: "Database Connection Pool Exhaustion"

@@ -366,4 +366,5 @@ That's the problem BlastRadius is solving.
 
 *Built for the Meta PyTorch OpenEnv Hackathon.*  
 *GitHub: [github.com/Divyansh-9/BlastRadius](https://github.com/Divyansh-9/BlastRadius)*  
+*Live Environment: [huggingface.co/spaces/Idred/BlastRadius-OpenEnv](https://huggingface.co/spaces/Idred/BlastRadius-OpenEnv)*  
 *Benchmark logs: [docs/BENCHMARK.md](docs/BENCHMARK.md)*
