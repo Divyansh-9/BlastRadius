@@ -131,5 +131,5 @@ class RedisMemoryLeakScenario(BaseScenario):
             correct_fix_order=["redis-cache", "session-store"],
             useful_investigation_targets=["redis-cache", "session-store"],
             max_optimal_steps=6,
-            max_total_reward=0.80,
+            max_total_reward=0.77,
         )

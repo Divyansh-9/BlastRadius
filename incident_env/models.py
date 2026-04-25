@@ -79,7 +79,7 @@ class IncidentObservation:
     services_status: Dict[str, str] = field(default_factory=dict)
     active_alerts: List[str] = field(default_factory=list)
     time_elapsed_minutes: int = 0
-    incident_severity: str = "P2"
+    incident_severity: str = ""
     services_at_risk: List[str] = field(default_factory=list)
     hint: str = ""
 

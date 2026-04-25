@@ -154,5 +154,5 @@ class S3KeyspaceScenario(BaseScenario):
             correct_fix_order=["batch-processor", "metadata-index", "api-layer"],
             useful_investigation_targets=["batch-processor", "metadata-index", "api-layer"],
             max_optimal_steps=8,
-            max_total_reward=0.85,
+            max_total_reward=0.77,
         )

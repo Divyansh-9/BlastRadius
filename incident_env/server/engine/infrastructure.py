@@ -117,6 +117,65 @@ class ServiceGraph:
                 svc.unhealthy_since_minute = 0
 
     # ---------------------------------------------------------------
+    # Snapshot Support (for GRPO offline evaluation)
+    # ---------------------------------------------------------------
+
+    def save_snapshot(self) -> Dict:
+        """
+        Serialize the full graph state into a plain dict.
+        Used by GRPO to freeze the environment at a specific step,
+        then restore it independently for each of G=4 completions.
+        """
+        return {
+            "services": {
+                name: {
+                    "status": svc.status.value,
+                    "current_metrics": copy.deepcopy(svc.current_metrics),
+                    "unhealthy_since_minute": svc.unhealthy_since_minute,
+                    "log_pattern": svc.log_pattern,
+                    "has_recent_deploy": svc.has_recent_deploy,
+                    "deploy_version": svc.deploy_version,
+                    "previous_version": svc.previous_version,
+                }
+                for name, svc in self._services.items()
+            },
+            "cascade_rules": [
+                {"source": r.source, "target": r.target, "triggered": r.triggered}
+                for r in self._cascade_rules
+            ],
+            "time_minutes": self._time_minutes,
+            "fix_history": copy.deepcopy(self._fix_history),
+            "damage_events": copy.deepcopy(self._damage_events),
+        }
+
+    def restore_snapshot(self, snapshot: Dict):
+        """
+        Restore graph state from a snapshot dict.
+        This must be called AFTER __init__ (i.e., the graph structure
+        already exists from the scenario). We only restore mutable state.
+        """
+        for name, svc_state in snapshot.get("services", {}).items():
+            svc = self._services.get(name)
+            if svc is None:
+                continue
+            svc.status = ServiceStatus(svc_state["status"])
+            svc.current_metrics = copy.deepcopy(svc_state["current_metrics"])
+            svc.unhealthy_since_minute = svc_state["unhealthy_since_minute"]
+            svc.log_pattern = svc_state["log_pattern"]
+            svc.has_recent_deploy = svc_state["has_recent_deploy"]
+            # Bug K: Restore deploy versions for replay fidelity
+            svc.deploy_version = svc_state.get("deploy_version", svc.deploy_version)
+            svc.previous_version = svc_state.get("previous_version", svc.previous_version)
+
+        for i, rule_state in enumerate(snapshot.get("cascade_rules", [])):
+            if i < len(self._cascade_rules):
+                self._cascade_rules[i].triggered = rule_state["triggered"]
+
+        self._time_minutes = snapshot.get("time_minutes", 0)
+        self._fix_history = copy.deepcopy(snapshot.get("fix_history", []))
+        self._damage_events = copy.deepcopy(snapshot.get("damage_events", []))
+
+    # ---------------------------------------------------------------
     # Queries
     # ---------------------------------------------------------------
 
@@ -243,6 +302,10 @@ class ServiceGraph:
         svc.current_metrics["latency_p99_ms"] = svc.healthy_metrics["latency_p99_ms"] * 8
         svc.current_metrics["error_rate_percent"] = min(svc.healthy_metrics["error_rate_percent"] * 50, 25.0)
         svc.current_metrics["requests_per_sec"] = svc.healthy_metrics["requests_per_sec"] * 0.6
+        # Bug L: Signal connection pressure in degraded state
+        svc.current_metrics["active_connections"] = min(
+            int(svc.healthy_metrics.get("active_connections", 45) * 2.2), 100
+        )
 
     def _apply_down_metrics(self, svc: ServiceNode):
         """Apply down-state metrics to a service."""
@@ -286,6 +349,7 @@ class ServiceGraph:
             svc.unhealthy_since_minute = -1
             svc.log_pattern = "recovery"
             self._fix_history.append({"action": "restart", "target": name, "minute": self._time_minutes})
+            self._auto_recover_dependents()
             return f"✅ {svc.display_name} restarted successfully. Service is now healthy.", True
 
         # Restart doesn't fix root cause
@@ -308,6 +372,7 @@ class ServiceGraph:
             svc.unhealthy_since_minute = -1
             svc.log_pattern = "recovery"
             self._fix_history.append({"action": "restart", "target": name, "minute": self._time_minutes})
+            self._auto_recover_dependents()
             return (
                 f"✅ {svc.display_name} restarted successfully.\n"
                 f"All upstream dependencies are now healthy — service recovered."
@@ -352,6 +417,7 @@ class ServiceGraph:
             svc.has_recent_deploy = False
             svc.log_pattern = "rollback_success"
             self._fix_history.append({"action": "rollback", "target": name, "minute": self._time_minutes})
+            self._auto_recover_dependents()
             return (
                 f"✅ Deployment rolled back on {svc.display_name}.\n"
                 f"Reverted: {svc.deploy_version} → {svc.previous_version}\n"
@@ -456,6 +522,10 @@ class ServiceGraph:
                         "target": svc.name,
                         "minute": self._time_minutes,
                     })
+                    # Bug G: Re-arm cascade rules targeting this service
+                    for rule in self._cascade_rules:
+                        if rule.target == svc.name and rule.triggered:
+                            rule.triggered = False
                     changed = True
 
     def _apply_cascading_damage(self, source_name: str):
@@ -480,8 +550,13 @@ class ServiceGraph:
     def is_fully_resolved(self) -> bool:
         return all(s.status == ServiceStatus.HEALTHY for s in self._services.values())
 
+    EXPLICIT_FIX_ACTIONS = {"restart", "rollback", "scale"}
+
     def get_resolved_services(self) -> List[str]:
-        return [e["target"] for e in self._fix_history]
+        return [
+            e["target"] for e in self._fix_history
+            if e.get("action") in self.EXPLICIT_FIX_ACTIONS
+        ]
 
     def count_collateral_damage(self) -> int:
         return sum(1 for e in self._damage_events if e.get("type") == "collateral_damage")

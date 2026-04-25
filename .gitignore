@@ -12,3 +12,4 @@ venv/
 .pytest_cache/
 .mypy_cache/
 *.log
+!docs/runs/*.log

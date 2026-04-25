@@ -143,5 +143,5 @@ class DbFailoverScenario(BaseScenario):
             correct_fix_order=["db-primary", "replication-mgr", "app-server"],
             useful_investigation_targets=["replication-mgr", "db-primary", "app-server"],
             max_optimal_steps=8,
-            max_total_reward=0.85,
+            max_total_reward=0.77,
         )
