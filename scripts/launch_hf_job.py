@@ -1,32 +1,29 @@
 """
 launch_hf_job.py
 ─────────────────────────────────────────────────────────────
-Spawns a Hugging Face Job on H200 (or A100 via env override)
-that runs the full SFT + GRPO pipeline for BlastRadius end-to-end.
+Spawns a Hugging Face Job that runs the full SFT + GRPO pipeline
+for BlastRadius end-to-end.
 
-Why H200 default:
-    During the OpenEnv hackathon (~800 teams), A100-large is
-    queue-blocked while H200 has open capacity AND is half the
-    cost ($5/hr vs $10/hr) AND has 1.7x the VRAM (141GB vs 80GB).
-    The only catch: H200 nodes ship CUDA 13.0 driver, so we use
-    a pytorch:cuda12.8 base image (forward-compat works).
+Hardware / image strategy (read this if H200 + PyTorch was failing):
+- HF "h200" nodes expose the GPU to `nvidia-smi`, but the stock
+  `pytorch/pytorch` wheels can still return `torch.cuda.is_available() == False`
+  with "Error 802: system not yet initialized" because the *user-mode*
+  CUDA stack in the container does not line up with the host driver the
+  way Jobs wires devices. The **NVIDIA NGC** `nvcr.io/nvidia/pytorch` images
+  ship a tested driver/runtime pairing and are the supported fix on H200.
+- `a100-large` is more predictable with the official `pytorch/pytorch` CUDA
+  12.1 devel image, but is often queue-blocked during hackathon crunch.
 
-Pipeline inside the job (~4-5 hours):
-    git clone main -> pip install -> train_sft -> validate
-    -> train_grpo (auto-pushes to HUB_MODEL_ID every 200 steps
-    via hub_strategy=checkpoint) -> validate
+vLLM is installed *after* SFT (see `pyproject.toml` `train_sft` / `train_grpo`)
+so pip cannot replace torch + bitsandbytes before the cold-start SFT run.
 
 Run locally:
-    python scripts/launch_hf_job.py                # default H200
+    python scripts/launch_hf_job.py
     $env:HF_JOB_FLAVOR='a100-large'; python scripts/launch_hf_job.py
-Then monitor via WandB and:
-    hf jobs logs   <job_id>
-    hf jobs ps
-    hf jobs cancel <job_id>
+    $env:HF_JOB_IMAGE='pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel'; python scripts/launch_hf_job.py
 """
 
 import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -50,57 +47,109 @@ if missing:
     print(f"FAIL missing env vars in .env: {missing}")
     sys.exit(1)
 
-HF_TOKEN       = os.environ["HF_TOKEN"]
-WANDB_API_KEY  = os.environ["WANDB_API_KEY"]
-WANDB_ENTITY   = os.environ["WANDB_ENTITY"]
-WANDB_PROJECT  = os.environ["WANDB_PROJECT"]
-HUB_MODEL_ID   = os.environ["HUB_MODEL_ID"]
+HF_TOKEN = os.environ["HF_TOKEN"]
+WANDB_API_KEY = os.environ["WANDB_API_KEY"]
+WANDB_ENTITY = os.environ["WANDB_ENTITY"]
+WANDB_PROJECT = os.environ["WANDB_PROJECT"]
+HUB_MODEL_ID = os.environ["HUB_MODEL_ID"]
+
+FLAVOR = os.environ.get("HF_JOB_FLAVOR", "h200")
+TIMEOUT = os.environ.get("HF_JOB_TIMEOUT", "5h")
+
+# NGC: full CUDA user-mode stack (fixes torch init on many HF h200 workers).
+# Official pytorch images work better on a100 where the driver/runtime gap is smaller.
+def _default_image(flavor: str) -> str:
+    if flavor.startswith("h200"):
+        return "nvcr.io/nvidia/pytorch:24.10-py3"
+    return "pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel"
+
+
+DOCKER_IMAGE = os.environ.get("HF_JOB_IMAGE", _default_image(FLAVOR))
 
 JOB_SCRIPT = f"""
 set -euo pipefail
 
-echo "==> Apt: git + build essentials"
-apt-get update -qq
-apt-get install -y -qq git build-essential
+# ── Container GPU runtime (K8s / HF Jobs) ─────────────────
+export NVIDIA_VISIBLE_DEVICES="${{NVIDIA_VISIBLE_DEVICES:-all}}"
+export NVIDIA_DRIVER_CAPABILITIES="${{NVIDIA_DRIVER_CAPABILITIES:-compute,utility}}"
+export CUDA_MODULE_LOADING="${{CUDA_MODULE_LOADING:-LAZY}}"
 
-echo "==> nvidia-smi (driver + GPU before any pip)"
+# Prefer bundled CUDA libs from common locations (pytorch + NGC layouts).
+for _lib in /usr/local/cuda/lib64 /usr/local/cuda-12.4/lib64 /usr/local/cuda-12.6/lib64 \\
+            /usr/local/cuda-13.0/lib64 /usr/lib/x86_64-linux-gnu; do
+  if [ -d "$_lib" ]; then
+    export LD_LIBRARY_PATH="$_lib:${{LD_LIBRARY_PATH:-}}"
+  fi
+done
+
+echo "==> System + GPU probe"
+uname -a || true
+ldconfig -p 2>/dev/null | head -n 5 || true
+ls -la /dev/nvidia* 2>/dev/null || true
+
+echo "==> nvidia-smi (host-visible GPUs)"
 nvidia-smi
 
-echo "==> Pre-install torch sanity (image baseline)"
-python -c "import torch; print('IMAGE torch', torch.__version__, 'cuda', torch.version.cuda, 'is_available', torch.cuda.is_available()); assert torch.cuda.is_available(), 'CUDA broken in base image'"
-
-echo "==> Cloning BlastRadius main"
-git clone --branch main https://github.com/Divyansh-9/BlastRadius.git /workspace
-cd /workspace
-
-echo "==> Pip env hardening (PEP 668 + freeze torch to image build)"
+echo "==> Pre-pip: baseline torch (must be True on a healthy image)"
 export PIP_BREAK_SYSTEM_PACKAGES=1
 export PIP_ROOT_USER_ACTION=ignore
-TORCH_VER=$(python -c "import torch; print(torch.__version__)")
-TORCH_CUDA=$(python -c "import torch; print(torch.version.cuda)")
-echo "Locking torch==$TORCH_VER (cuda $TORCH_CUDA) so deps cannot downgrade it"
-echo "torch==$TORCH_VER" > /tmp/torch.constraint
-export PIP_CONSTRAINT=/tmp/torch.constraint
+python3 <<'PY'
+import os, sys
+print("LD_LIBRARY_PATH=", os.environ.get("LD_LIBRARY_PATH", "")[:500])
+import torch
+print("torch", torch.__version__, "built_cuda", torch.version.cuda, "is_available", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("device0", torch.cuda.get_device_name(0))
+else:
+    print("FATAL: torch sees no CUDA before any project pip install. Wrong HF_JOB_IMAGE for this node.")
+    sys.exit(1)
+PY
 
-echo "==> Installing project + train extras (torch is locked)"
-pip install --quiet --upgrade pip
-pip install --quiet -e '.[train]' --no-build-isolation
-pip install --quiet 'trl>=0.12.0' wandb python-dotenv --no-build-isolation
+echo "==> Apt: git + build essentials (only if missing)"
+if ! command -v git &>/dev/null; then
+  apt-get update -qq
+  apt-get install -y -qq git
+fi
+apt-get update -qq
+apt-get install -y -qq build-essential || true
 
-echo "==> Post-install torch sanity (must still see GPU)"
-python -c "import torch; print('POST torch', torch.__version__, 'cuda', torch.version.cuda, 'is_available', torch.cuda.is_available(), 'device', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE'); assert torch.cuda.is_available(), 'CUDA broken AFTER pip install — a dependency replaced torch'"
+echo "==> Cloning BlastRadius main"
+if [ -d /workspace/.git ]; then rm -rf /workspace; fi
+git clone --depth 1 --branch main https://github.com/Divyansh-9/BlastRadius.git /workspace
+cd /workspace
+
+echo "==> pip: Stage 1 only (train_sft — no vLLM yet)"
+python3 -m pip install --quiet --upgrade pip
+python3 -m pip install --quiet -e ".[train_sft]" --no-build-isolation
+
+echo "==> post-pip: torch check"
+python3 <<'PY'
+import torch
+print("torch", torch.__version__, "cuda", torch.version.cuda, "is_available", torch.cuda.is_available())
+assert torch.cuda.is_available(), "CUDA broke after train_sft pip"
+print("ok", torch.cuda.get_device_name(0))
+PY
 
 echo "==> Stage 1: SFT training"
-python -m agent.train_sft \\
+python3 -m agent.train_sft \\
     --model unsloth/Qwen2.5-14B-Instruct-bnb-4bit \\
     --data sft_data/expert_trajectories.jsonl \\
     --output models/sft_checkpoint
 
 echo "==> Validate SFT checkpoint"
-python -m agent.validate_save --model models/sft_checkpoint
+python3 -m agent.validate_save --model models/sft_checkpoint
+
+echo "==> pip: vLLM for GRPO (after SFT; pin torch in constraint file)"
+TORCH_VER=$(python3 -c "import torch; print(torch.__version__)" | tr -d '[:space:]')
+echo "torch==$TORCH_VER" > /tmp/torch_pinned
+export PIP_CONSTRAINT=/tmp/torch_pinned
+python3 -m pip install --quiet "vllm>=0.5.0" --no-build-isolation
+
+echo "==> post-vLLM: torch check"
+python3 -c "import torch; assert torch.cuda.is_available()"
 
 echo "==> Stage 2: GRPO training (auto-pushes to {HUB_MODEL_ID})"
-python -m agent.train_grpo \\
+python3 -m agent.train_grpo \\
     --model models/sft_checkpoint \\
     --data sft_data/expert_trajectories.jsonl \\
     --output models/grpo_checkpoint \\
@@ -111,31 +160,40 @@ python -m agent.train_grpo \\
     --max-runtime-hours 4.0
 
 echo "==> Validate final checkpoint (GRPO -> SFT fallback)"
-python -m agent.validate_save --model models/grpo_checkpoint \\
-    || python -m agent.validate_save --model models/sft_checkpoint
+python3 -m agent.validate_save --model models/grpo_checkpoint \\
+    || python3 -m agent.validate_save --model models/sft_checkpoint
 
 echo "==> Done. Model on https://huggingface.co/{HUB_MODEL_ID}"
 """.strip()
 
-FLAVOR  = os.environ.get("HF_JOB_FLAVOR", "h200")
-TIMEOUT = os.environ.get("HF_JOB_TIMEOUT", "5h")
-
 cmd = [
-    "hf", "jobs", "run",
-    "--flavor", FLAVOR,
-    "--timeout", TIMEOUT,
+    "hf",
+    "jobs",
+    "run",
+    "--flavor",
+    FLAVOR,
+    "--timeout",
+    TIMEOUT,
     "--detach",
-    "--secrets", f"HF_TOKEN={HF_TOKEN}",
-    "--secrets", f"WANDB_API_KEY={WANDB_API_KEY}",
-    "-e", f"WANDB_ENTITY={WANDB_ENTITY}",
-    "-e", f"WANDB_PROJECT={WANDB_PROJECT}",
-    "-e", f"HUB_MODEL_ID={HUB_MODEL_ID}",
-    os.environ.get("HF_JOB_IMAGE", "pytorch/pytorch:2.11.0-cuda13.0-cudnn9-devel"),
-    "bash", "-c", JOB_SCRIPT,
+    "--secrets",
+    f"HF_TOKEN={HF_TOKEN}",
+    "--secrets",
+    f"WANDB_API_KEY={WANDB_API_KEY}",
+    "-e",
+    f"WANDB_ENTITY={WANDB_ENTITY}",
+    "-e",
+    f"WANDB_PROJECT={WANDB_PROJECT}",
+    "-e",
+    f"HUB_MODEL_ID={HUB_MODEL_ID}",
+    DOCKER_IMAGE,
+    "bash",
+    "-c",
+    JOB_SCRIPT,
 ]
 
 print("=" * 60)
 print(f"Launching HF Job: {FLAVOR}, {TIMEOUT} timeout")
+print(f"  Image:  {DOCKER_IMAGE}")
 print(f"  WANDB:  https://wandb.ai/{WANDB_ENTITY}/{WANDB_PROJECT}")
 print(f"  MODEL:  https://huggingface.co/{HUB_MODEL_ID}")
 print("=" * 60)
