@@ -27,6 +27,8 @@ import time
 from typing import List
 from pathlib import Path
 
+from agent.curriculum import CurriculumScheduler
+
 try:
     import wandb # type: ignore
 except ImportError:
@@ -168,7 +170,9 @@ def environment_reward_func(completions: List[str], role: List[str], task_id: Li
     global _env_executor
     if _env_executor is None:
         max_workers = os.cpu_count() or 4
-        _env_executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max_workers))
+        # FIX: ProcessPoolExecutor bypasses the GIL for CPU-heavy env steps.
+        # ThreadPoolExecutor bottlenecks here because env.step() is CPU-bound.
+        _env_executor = concurrent.futures.ProcessPoolExecutor(max_workers=min(8, max_workers))
 
     futures = [
         _env_executor.submit(evaluate_single_env, comp, current_role, tid, snapshot)
@@ -183,38 +187,55 @@ def environment_reward_func(completions: List[str], role: List[str], task_id: Li
 # Preprocessing Dataset
 # ─────────────────────────────────────────────────────────────
 
+# Difficulty tier ordering for curriculum sorting
+_DIFFICULTY_ORDER = {
+    "easy": 0, "medium": 1, "hard": 2,
+    "db_failover": 3, "cert_expiry": 3, "redis_memory_leak": 3,
+    "k8s_eviction": 4, "dns_propagation": 4, "regex_catastrophe": 4, "s3_keyspace": 4,
+}
+
+
 def build_dataset_for_grpo(file_path: str):
     """
     GRPOTrainer expects a dataset with 'prompt' formatting string.
     We inject the role and task details into the dataset so the reward
     functions can read them.
+
+    Rows are sorted by difficulty tier (CurriculumScheduler order) so GRPO
+    sees easy → medium → hard progression rather than random insertion order.
     """
     dataset = load_dataset("json", data_files=file_path, split="train")
-    
+
     def process_row(example):
-        # GRPOTrainer automatically formats lists of dicts using the chat template.
-        # We only pass the user prompt; the trainer generates the completion.
         prompt = [
             {"role": "system", "content": example["system_prompt"]},
             {"role": "user", "content": example["user_prompt"]}
         ]
-        
-        # We infer history by splitting the user prompt (hacky but works for offline rl)
+
         history_log = []
         if "[EPISODE HISTORY]" in example["user_prompt"]:
             hist_block = example["user_prompt"].split("[EPISODE HISTORY]")[1].split("Based on")[0].strip()
             history_log = [line for line in hist_block.split("\n") if line]
-            
+
+        task_id = example.get("task_id", "easy")
         return {
             "prompt": prompt,
             "role": example.get("role", "commander"),
-            "task_id": example.get("task_id", "easy"),
+            "task_id": task_id,
             "step": example.get("step", 1),
             "history_log": history_log,
             "env_snapshot": example.get("env_snapshot"),
+            # Attach sort key so we can order by curriculum tier
+            "_difficulty_tier": _DIFFICULTY_ORDER.get(task_id, 99),
         }
-        
-    return dataset.map(process_row)
+
+    dataset = dataset.map(process_row)
+
+    # FIX: Sort by difficulty tier to activate curriculum learning.
+    # CurriculumScheduler defines the canonical easy→hard ordering.
+    dataset = dataset.sort("_difficulty_tier")
+    dataset = dataset.remove_columns(["_difficulty_tier"])
+    return dataset
 
 
 # ─────────────────────────────────────────────────────────────
@@ -261,15 +282,20 @@ def main():
         vllm_gpu_memory_utilization = 0.50
 
     # 1. Load Model with Colocated vLLM integration
-    max_seq_length = 1024
-    
+    # FIX: 2048 is the minimum for incident scenarios — 1024 truncates hard
+    # scenario context mid-reasoning before the model sees the full system state.
+    max_seq_length = 2048
+
+    # FIX: gpu_memory_utilization in from_pretrained sets the initial vLLM pool.
+    # It MUST match the per-profile vllm_gpu_memory_utilization to avoid OOM.
+    # A100: 0.70 → vLLM gets 56GB, leaves 24GB for gradients/optimizer/activations.
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model,
         max_seq_length=max_seq_length,
         load_in_4bit=load_in_4bit,
         fast_inference=True,         # ENABLES VLLM COLOCATION
         max_lora_rank=32,            # Must match PEFT rank below
-        gpu_memory_utilization=0.90, 
+        gpu_memory_utilization=vllm_gpu_memory_utilization,
     )
 
     # 2. Attach LoRA for GRPO updates
@@ -348,23 +374,28 @@ def main():
         vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,       
         
         # Generation limits
-        num_generations=num_generations,                      
-        max_prompt_length=512,                  # Triage reports + JSON
-        max_completion_length=512,              # Chain of thought length limit
-        
+        num_generations=num_generations,
+        # FIX: 1024 prompt + 512 completion. Hard scenarios hit 800-900 tokens
+        # on prompt alone at 512 limit — model was seeing truncated state.
+        max_prompt_length=1024,
+        max_completion_length=512,
+
         # Optimizer limits
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
-        learning_rate=5e-6,                     # RL requires lower LR
+        # FIX: 5e-6 risks policy divergence before KL kicks in on short runs.
+        # 1e-6 is the stable standard for Qwen2.5 GRPO across published work.
+        learning_rate=1e-6,
         optim="adamw_8bit",                     # Saves ~0.3GB VRAM
-        
+
         # Training length
         num_train_epochs=2,
         logging_steps=5,
         output_dir=args.output,
-        
-        # KL Divergence constraints to prevent reward hacking
-        beta=0.04,
+
+        # FIX: beta=0.1 provides stronger KL constraint to prevent early divergence.
+        # At 1e-6 LR + 2 epochs + limited data, policy stability > exploration speed.
+        beta=0.1,
         
         # Checkpointing & Hub (Async uploads to prevent dead GPU time)
         save_steps=200,
@@ -401,7 +432,13 @@ def main():
         from huggingface_hub import snapshot_download  # type: ignore
         snapshot_download(repo_id=args.hub_model_id, local_dir=args.output)
 
-    resume = os.path.exists(args.output)
+    # FIX: Check for trainer_state.json, not just dir existence.
+    # A raw emergency save (weights only, no TRL metadata) will crash
+    # resume_from_checkpoint=True with a checkpoint metadata error.
+    trainer_state_path = Path(args.output) / "trainer_state.json"
+    resume = trainer_state_path.exists()
+    if os.path.exists(args.output) and not resume:
+        print("⚠️  Output dir exists but no trainer_state.json found — starting fresh (not resuming).")
     trainer.train(resume_from_checkpoint=resume)
 
     # 5. Save Finished Model

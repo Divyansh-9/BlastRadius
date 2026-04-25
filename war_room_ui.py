@@ -115,7 +115,7 @@ body { background-color: #030712 !important; color: #f9fafb !important; }
 h1, h2, h3 { font-family: 'Courier New', monospace; font-weight: bold; }
 """
 
-with gr.Blocks(theme=gr.themes.Monochrome(), css=custom_css) as demo:
+with gr.Blocks(theme=gr.themes.Base(), css=custom_css) as demo:
     gr.HTML("<h1 style='text-align:center; color:#38bdf8; font-size:3em; margin-bottom:0;'>🔴 THE WAR ROOM</h1>")
     gr.HTML("<p style='text-align:center; color:#9ca3af; font-family:monospace;'>BlastRadius Autonomous SRE Agent (MATPO-GRPO)</p>")
     
