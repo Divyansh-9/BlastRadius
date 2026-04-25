@@ -27,6 +27,13 @@ dev = [
     "pytest>=7.0",
     "httpx>=0.25.0",
 ]
+train = [
+    "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git",
+    "trl>=0.12.0",
+    "peft",
+    "bitsandbytes",
+    "vllm"
+]
 
 [tool.setuptools.packages.find]
 include = ["incident_env*", "server*"]
