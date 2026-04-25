@@ -63,10 +63,13 @@ class IncidentEnvironment:
             return text
             
         if isinstance(data, dict):
-            return {self._obf_map.get(k, k): v for k, v in data.items()}
+            return {
+                self._obf_map.get(k, k): self._obfuscate(v)  # Bug #7: recurse into values too
+                for k, v in data.items()
+            }
             
         if isinstance(data, list):
-            return [self._obf_map.get(i, i) for i in data]
+            return [self._obfuscate(item) for item in data]  # recurse into items as strings
             
         return data
 
@@ -94,6 +97,7 @@ class IncidentEnvironment:
             "task_id": self._state.task_difficulty if self._state else "easy",
             "state": copy.deepcopy(asdict(self._state)),
             "graph_snapshot": self._graph.save_snapshot() if self._graph else {},
+            "grader_snapshot": self._grader.save_snapshot() if self._grader else {},
             "diagnosis_attempts": self._diagnosis_attempts,
             "action_history": list(self._action_history),
         }
@@ -109,7 +113,7 @@ class IncidentEnvironment:
         if scenario_cls is None:
             raise ValueError(f"Cannot restore: unknown task_id '{task_id}'")
 
-        self._scenario = scenario_cls()
+        self._scenario = scenario_cls() # type: ignore
         self._graph = self._scenario.build_service_graph()
         self._eval_mode = False
         self._obf_map = {}
@@ -121,6 +125,9 @@ class IncidentEnvironment:
         # Restore grader
         grading_config = self._scenario.get_grading_config()
         self._grader = Grader(grading_config)
+        # Bug #4: Restore grader internal state (investigation, diagnosis, rewards, etc.)
+        if snapshot.get("grader_snapshot"):
+            self._grader.restore_snapshot(snapshot["grader_snapshot"])
 
         # Restore episode state
         saved_state = snapshot.get("state", {})
@@ -133,6 +140,17 @@ class IncidentEnvironment:
             total_reward=saved_state.get("total_reward", 0.0),
             done=saved_state.get("done", False),
             is_resolved=saved_state.get("is_resolved", False),
+            wrong_diagnoses=saved_state.get("wrong_diagnoses", 0),
+            root_cause_identified=saved_state.get("root_cause_identified", False),
+            # Bug C: Restore ALL remaining IncidentState fields
+            root_cause_service=saved_state.get("root_cause_service", ""),
+            agent_diagnosis=saved_state.get("agent_diagnosis", None),
+            actions_taken=saved_state.get("actions_taken", []),
+            step_rewards=saved_state.get("step_rewards", []),
+            services_resolved=saved_state.get("services_resolved", []),
+            collateral_damage=saved_state.get("collateral_damage", 0),
+            time_elapsed_minutes=saved_state.get("time_elapsed_minutes", 0),
+            diagnosis_accuracy=saved_state.get("diagnosis_accuracy", 0.0),
         )
 
         self._diagnosis_attempts = snapshot.get("diagnosis_attempts", 0)
@@ -159,7 +177,7 @@ class IncidentEnvironment:
         if scenario_cls is None:
             raise ValueError(f"Unknown task_id '{task_id}'. Choose from: {list(SCENARIOS.keys())}")
 
-        self._scenario = scenario_cls()
+        self._scenario = scenario_cls() # type: ignore
         self._graph = self._scenario.build_service_graph()
         self._eval_mode = eval_mode
         self._obf_map = {}
@@ -259,13 +277,6 @@ class IncidentEnvironment:
         time_cost = ACTION_TIME_COSTS.get(command, 1)
         if time_cost > 0:
             cascades = self._graph.tick(time_cost)
-            if cascades:
-                # Failures spread! Note this in the response.
-                cascade_msgs = [
-                    f"⚠️ While you were acting: {c['target']} entered {c['new_status']} state "
-                    f"(cascaded from {c['source']})"
-                    for c in cascades
-                ]
         else:
             cascades = []
 
@@ -300,9 +311,11 @@ class IncidentEnvironment:
         self._state.collateral_damage = self._graph.count_collateral_damage()
 
         # Grade this step
+        # Bug B: Deobfuscate target before grading — grader compares against real service names
+        real_target = self._deobfuscate(action.target) if action.target else ""
         grade = self._grader.grade_step(
             command=command,
-            target=action.target,
+            target=real_target,
             params=action.parameters,
             action_succeeded=action_succeeded,
             services_now_healthy=self._state.services_resolved,
@@ -311,16 +324,20 @@ class IncidentEnvironment:
             collateral_damage=self._state.collateral_damage,
         )
 
+        # Sync grader's cumulative reward FIRST (Bug #3 fix)
         self._state.total_reward = self._grader.cumulative_reward
         self._state.step_rewards = self._grader.step_rewards
         
+        # Set root_cause_identified when grader confirms correct diagnosis (Bug #7 fix)
+        if "root_cause_correct" in grade.breakdown:
+            self._state.root_cause_identified = True
+
         # Anti-cheat: diagnosis penalty escalation
+        # These mutations happen AFTER the grader sync, so they stick (Bug #3 fix)
         if command == "diagnose":
             self._diagnosis_attempts += 1
-            # Only count wrong diagnoses (not duplicate or correct re-submissions)
             if "root_cause_wrong" in grade.breakdown:
                 self._state.wrong_diagnoses += 1
-                # Exponential penalty: -0.03, -0.06, -0.12, ...
                 if self._state.wrong_diagnoses > 1:
                     escalation = -0.03 * (2 ** (self._state.wrong_diagnoses - 2))
                     self._state.total_reward += escalation
@@ -330,11 +347,13 @@ class IncidentEnvironment:
                     grade.feedback = "Episode Terminated: Maximum incorrect diagnoses reached (Anti-Cheat)."
 
         # Anti-cheat: action repetition damping
+        # Bug D: Write to grader._cumulative_reward so it persists across step syncs
         action_key = (command, self._deobfuscate(action.target) if action.target else "")
         repeat_count = sum(1 for prev in self._action_history if prev == action_key)
         if repeat_count >= 3 and command not in ("check_status", "diagnose"):
             damping = -0.01 * (repeat_count - 2)
-            self._state.total_reward += damping
+            self._grader._cumulative_reward += damping  # write to grader, not state
+            self._state.total_reward = self._grader.cumulative_reward  # re-sync
         self._action_history.append(action_key)
 
         # Fix #8: Check if done — distinguish timeout from resolution
@@ -409,6 +428,7 @@ class IncidentEnvironment:
         if command == "diagnose":
             return self._cmd_diagnose(params), False
 
+        assert self._graph is not None
         if command == "restart_service":
             text, success = self._graph.restart_service(target)
             return text, success
@@ -425,6 +445,7 @@ class IncidentEnvironment:
 
     def _cmd_check_status(self) -> str:
         """Show status of all services."""
+        assert self._graph is not None
         lines = ["=== System Status Dashboard ===", ""]
         for name, svc in self._graph.get_all_services().items():
             icon = {"healthy": "🟢", "degraded": "🟡", "down": "🔴", "restarting": "🔄"}.get(
@@ -445,6 +466,7 @@ class IncidentEnvironment:
 
     def _cmd_check_logs(self, target: str) -> str:
         """Show logs for a specific service."""
+        assert self._graph is not None
         svc = self._graph.get_service(target)
         if svc is None:
             return (
@@ -455,6 +477,7 @@ class IncidentEnvironment:
 
     def _cmd_check_metrics(self, target: str) -> str:
         """Show metrics dashboard for a specific service."""
+        assert self._graph is not None
         svc = self._graph.get_service(target)
         if svc is None:
             return (
@@ -465,6 +488,7 @@ class IncidentEnvironment:
 
     def _cmd_check_dependencies(self) -> str:
         """Show the service dependency graph."""
+        assert self._graph is not None
         return self._graph.get_dependency_text()
 
     def _cmd_diagnose(self, params: Dict) -> str:
@@ -498,7 +522,11 @@ class IncidentEnvironment:
 
     def _error_response(self, message: str) -> Dict[str, Any]:
         """Return an error response."""
-        obs = IncidentObservation(output=f"ERROR: {message}")
+        severity = self._graph.get_incident_severity() if self._graph else ""
+        obs = IncidentObservation(
+            output=f"ERROR: {message}",
+            incident_severity=severity,
+        )
         return {
             "observation": asdict(obs),
             "reward": 0.0,

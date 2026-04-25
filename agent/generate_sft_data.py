@@ -41,9 +41,8 @@ import os
 import sys
 import time
 import argparse
-import random
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from openai import OpenAI
 
@@ -137,6 +136,10 @@ class ExpertEpisodeRunner:
 
         while not done and step_num < 20:
             step_num += 1
+            
+            # CRITICAL FIX: Save snapshot BEFORE taking the action so GRPO can 
+            # exactly restore the state the prompt is looking at.
+            current_snapshot = self.env.save_snapshot()
 
             # ── SCOUT TURN ──
             # Build the same prompt structure the student model will see
@@ -153,6 +156,7 @@ class ExpertEpisodeRunner:
                 "response": scout_response,
                 "task_id": task_id,
                 "step": step_num,
+                "env_snapshot": current_snapshot,
             })
 
             # ── COMMANDER TURN ──
@@ -171,13 +175,14 @@ class ExpertEpisodeRunner:
                 "response": cmdr_response,
                 "task_id": task_id,
                 "step": step_num,
+                "env_snapshot": current_snapshot,
             })
 
             # ── EXECUTE ACTION ──
             try:
                 action = IncidentAction(
                     command=action_dict.get("command", "check_status"),
-                    target=action_dict.get("target", None),
+                    target=action_dict.get("target") or "",
                     parameters=action_dict.get("parameters", {}),
                 )
                 result = self.env.step(action)
@@ -211,6 +216,12 @@ class ExpertEpisodeRunner:
             tgt = action_dict.get("target", "")
             history.append(f"Step {step_num}: {cmd}({tgt}) → reward={last_reward:+.4f}")
 
+        # CRITICAL FIX (Risk #4): Rejection Sampling
+        # Ensure we don't save poor trajectories to the SFT dataset.
+        final_score = self.env._grader.get_final_score().reward if hasattr(self.env, '_grader') else last_reward
+        if not done or final_score < 0.6:
+            raise Exception(f"Trajectory rejected (score: {final_score:.2f}, done: {done}) to maintain SFT quality.")
+
         return training_examples
 
     def _build_scout_prompt(self, observation: Dict, history: List[str]) -> str:
@@ -240,7 +251,7 @@ Recent History: {'; '.join(history[-3:]) if history else 'Episode start'}"""
 
     def _build_commander_prompt(
         self, triage: str, step_num: int, last_reward: float, history: List[str],
-        observation: Dict = None
+        observation: Optional[Dict] = None
     ) -> str:
         # Fix #4: Use state-aware phase heuristic instead of hard-coded step thresholds
         phase = get_phase(observation or {}, step_num)

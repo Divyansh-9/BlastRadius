@@ -109,6 +109,14 @@ _LOG_TEMPLATES: Dict[str, List[str]] = {
         "[{ts}] INFO  [{svc}] Resource allocation adjusted — service stabilized",
     ],
 
+    # Auto-recovery after upstream fix (cascade victim self-healing)
+    "auto_recovery": [
+        "[{ts}] INFO  [{svc}] Service auto-recovered: upstream dependency restored",
+        "[{ts}] INFO  [{svc}] Health check passed after upstream fix | status=200 | latency={lat}ms",
+        "[{ts}] INFO  [{svc}] Connection pool re-established to upstream | active={conn}/100",
+        "[{ts}] INFO  [{svc}] Resuming normal operation after cascade recovery | uptime_restored",
+    ],
+
     # Worker queue backup
     "queue_backup": [
         "[{ts}] WARN  [{svc}] Queue depth: {depth} messages (normal: 50)",

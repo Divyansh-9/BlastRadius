@@ -9,7 +9,7 @@ Exposes the OpenEnv HTTP API:
 - GET  /info      → Environment metadata
 """
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -304,7 +304,6 @@ def reset(request: Optional[ResetRequest] = None):
     """
     if request is None:
         request = ResetRequest()
-    from incident_env.models import IncidentAction
     result = env.reset(task_id=request.task_id, eval_mode=request.eval_mode)
     return StepResponse(
         observation=ObservationResponse(**result["observation"]),

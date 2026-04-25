@@ -39,7 +39,7 @@ This is the bridge between the infrastructure state machine and the Agent. It im
 
 The agent stack abandons traditional "Two-Model" architectures (which cause OOM errors and credit assignment failure) in favor of **MATPO (Multi-Agent Tool-Integrated Policy Optimization)**. 
 
-One single model (`Qwen2.5-1.5B`) acts as both the data analyzer (Scout) and the decision-maker (Commander).
+One single model (`deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`) acts as both the data analyzer (Scout) and the decision-maker (Commander).
 
 ### `prompts.py`
 Defines strict XML-style schemas. 
@@ -55,12 +55,17 @@ The production runner. It calls the OpenAI-compatible API endpoints iteratively.
 To prevent "Entropy Collapse" where a randomly initialized RL agent just guesses invalid JSON, we use a Teacher Model (e.g., `Llama 3.1 8B` or `GPT-4o`) to play 500+ perfect episodes. It saves these traces to `expert_trajectories.jsonl`.
 
 ### `train_sft.py` (Stage 2: QLoRA)
-Takes the expert trajectories and applies Supervised Fine-Tuning using **Unsloth 4-bit QLoRA**. This teaches the 1.5B model the domain vocabulary and XML formatting.
+Takes the expert trajectories and applies Supervised Fine-Tuning using **Unsloth QLoRA**. This teaches the base 32B Reasoner the domain vocabulary and XML formatting.
 
 ### `train_grpo.py` (Stage 3: RL Loop)
 The crown jewel. It utilizes `TRL GRPOTrainer` combined with Unsloth's `fast_inference=True` to share weights between generation and training.
-- **Memory Optimization**: By utilizing `adamw_8bit`, `r=32` LoRA, and strictly limiting `num_generations=4`, the entire GRPO loop is restricted to **~4.5GB VRAM**, allowing it to train natively on consumer GPUs (like an RTX 4050).
-- **Reward Functions**: Employs `format_reward_func` (verifying XML tag obedience) and `environment_reward_func` (spawning a cloned `IncidentEnvironment` to calculate the semantic TF-IDF score).
+- **MLOps & Spot Safety**: The loop catches `SIGTERM` signals sent by cloud providers (like HF Jobs or AWS Spot) 30 seconds before preemption, automatically saving an emergency checkpoint to the Hub.
+- **WandB Tracking**: Natively integrated for real-time team visibility into loss and reward metrics.
+- **Hardware Profiles**: Supports `--hardware-profile` (`6gb`, `a10`, `a100`) to dynamically scale generation counts, batch sizes, and quantization.
+- **Parallel Environment Stepping**: Modifies `environment_reward_func` to use `ProcessPoolExecutor`, running $G$ simulations concurrently to unblock the GPU.
+
+### `vector_env.py` (The Async Wrapper)
+While the GRPO loop handles parallel evaluations via Python concurrent futures, we provide a standard `VectorEnv` wrapper for compatibility with traditional RL algorithms (like PPO/RLLib) outside the TRL ecosystem.
 
 ---
 

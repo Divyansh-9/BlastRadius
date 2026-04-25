@@ -10,9 +10,8 @@ Each scenario defines:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List
 
-from incident_env.server.engine.infrastructure import CascadeRule, ServiceGraph, ServiceNode
+from incident_env.server.engine.infrastructure import ServiceGraph
 from incident_env.server.engine.grader import ScenarioGradingConfig
 
 

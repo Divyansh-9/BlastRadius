@@ -149,7 +149,7 @@ class RewardConfig:
     speed_bonus_max: float = 0.10
 
     # Causal chain similarity
-    chain_similarity_threshold: float = 0.20
+    chain_similarity_threshold: float = 0.45
 
 
 # Default config instance
@@ -170,6 +170,9 @@ class ScenarioGradingConfig:
     Grading configuration for a specific scenario.
 
     Defines the ground truth that the grader evaluates against.
+    max_total_reward is computed analytically from the scenario shape
+    and the active RewardConfig, so normalization stays correct
+    across hyperparameter sweeps.
     """
     root_cause_service: str = ""
     root_cause_description: str = ""
@@ -178,7 +181,27 @@ class ScenarioGradingConfig:
     correct_fix_order: List[str] = field(default_factory=list)
     useful_investigation_targets: List[str] = field(default_factory=list)
     max_optimal_steps: int = 6
-    max_total_reward: float = 1.0
+    max_total_reward: float = 1.0  # legacy default; overridden by compute_max_total_reward
+
+    def compute_max_total_reward(self, rc: Optional["RewardConfig"] = None) -> float:
+        """Derive the theoretical max reward from the scenario shape + RewardConfig."""
+        if rc is None:
+            rc = DEFAULT_REWARD_CONFIG
+        total = 0.0
+        # Status checks (capped)
+        total += rc.status_check_reward * rc.max_status_checks_rewarded
+        # Investigation (one reward per useful target)
+        total += rc.useful_investigation * len(self.useful_investigation_targets)
+        # Diagnosis
+        total += rc.root_cause_correct
+        total += rc.causal_chain_max
+        total += rc.confidence_calibrated
+        # Fixes
+        total += rc.correct_fix * len(self.correct_fix_actions)
+        # Episode completion
+        total += rc.resolution_bonus
+        total += rc.speed_bonus_max
+        return round(total, 4)
 
 
 class Grader:
@@ -200,6 +223,8 @@ class Grader:
     ):
         self._config = config
         self._rc = reward_config or DEFAULT_REWARD_CONFIG
+        # Override hardcoded max_total_reward with analytic computation
+        self._config.max_total_reward = config.compute_max_total_reward(self._rc)
         self._investigated_services: set = set()
         self._diagnosis_submitted: bool = False
         self._diagnosis_was_correct: bool = False
@@ -209,6 +234,37 @@ class Grader:
         self._step_rewards: List[float] = []
         self._status_check_count: int = 0
         self._fix_attempts: Dict[str, int] = {}  # anti-cheat: track per-service
+        self._revision_used: bool = False  # Bug #3: explicitly init for snapshot safety
+
+    # ── Snapshot Support (Bug #4: GRPO grader state cloning) ──
+
+    def save_snapshot(self) -> Dict:
+        """Serialize all mutable grader state for GRPO environment cloning."""
+        return {
+            "investigated": list(self._investigated_services),
+            "diagnosis_submitted": self._diagnosis_submitted,
+            "diagnosis_correct": self._diagnosis_was_correct,
+            "revision_used": self._revision_used,
+            "fixes_applied": list(self._fixes_applied),
+            "collateral_count": self._collateral_count,
+            "cumulative_reward": self._cumulative_reward,
+            "step_rewards": list(self._step_rewards),
+            "status_check_count": self._status_check_count,
+            "fix_attempts": dict(self._fix_attempts),
+        }
+
+    def restore_snapshot(self, snap: Dict):
+        """Restore grader state from a snapshot dict."""
+        self._investigated_services = set(snap.get("investigated", []))
+        self._diagnosis_submitted = snap.get("diagnosis_submitted", False)
+        self._diagnosis_was_correct = snap.get("diagnosis_correct", False)
+        self._revision_used = snap.get("revision_used", False)
+        self._fixes_applied = list(snap.get("fixes_applied", []))
+        self._collateral_count = snap.get("collateral_count", 0)
+        self._cumulative_reward = snap.get("cumulative_reward", 0.0)
+        self._step_rewards = list(snap.get("step_rewards", []))
+        self._status_check_count = snap.get("status_check_count", 0)
+        self._fix_attempts = dict(snap.get("fix_attempts", {}))
 
     def grade_step(
         self,
@@ -245,20 +301,32 @@ class Grader:
         rc = self._rc
 
         # ─── Investigation rewards ───
-        if command in ("check_logs", "check_metrics", "check_status"):
+        if command in ("check_logs", "check_metrics", "check_status", "check_dependencies"):
             if command == "check_status":
                 self._status_check_count += 1
                 if self._status_check_count <= rc.max_status_checks_rewarded:
                     reward += rc.status_check_reward
                     breakdown["status_check"] = rc.status_check_reward
                     feedback_parts.append("Good: Checking overall system status.")
+            elif command == "check_dependencies":
+                # Reward once for checking dependency graph
+                if "_deps_checked" not in self._investigated_services:
+                    reward += rc.status_check_reward
+                    breakdown["dependency_check"] = rc.status_check_reward
+                    feedback_parts.append("Good: Understanding service dependencies.")
+                    self._investigated_services.add("_deps_checked")
             elif target in self._config.useful_investigation_targets:
                 if target not in self._investigated_services:
                     reward += rc.useful_investigation
                     breakdown["useful_investigation"] = rc.useful_investigation
                     feedback_parts.append(f"Good: Investigating {target} is relevant.")
                     self._investigated_services.add(target)
-            else:
+                else:
+                    # Re-investigation: same penalty as irrelevant to discourage step waste
+                    reward += rc.irrelevant_investigation
+                    breakdown["irrelevant_investigation"] = rc.irrelevant_investigation
+                    feedback_parts.append(f"Already investigated {target}. Wasted step.")
+            elif target:
                 reward += rc.irrelevant_investigation
                 breakdown["irrelevant_investigation"] = rc.irrelevant_investigation
                 feedback_parts.append(f"Wasted time: {target} is not directly relevant.")
@@ -310,14 +378,14 @@ class Grader:
 
         # ─── All resolved bonus ───
         if all_resolved:
-            # Smooth linear speed bonus (not step function)
+            # Smooth linear speed bonus
             optimal = self._config.max_optimal_steps
             if step_number <= optimal:
                 speed_bonus = rc.speed_bonus_max
             elif step_number >= optimal * 2:
                 speed_bonus = 0.0
             else:
-                # Linear interpolation: bonus decreases linearly from max to 0
+                # Linear interpolation: bonus decreases from max to 0
                 progress = (step_number - optimal) / optimal
                 speed_bonus = round(rc.speed_bonus_max * (1.0 - progress), 4)
 
@@ -339,17 +407,34 @@ class Grader:
 
     def _grade_diagnosis(self, params: Dict[str, Any]) -> tuple:
         """Grade a diagnosis submission with causal chain evaluation."""
-        reward = 0.0
-        breakdown = {}
-        feedback_parts = []
+
         rc = self._rc
 
         if self._diagnosis_submitted:
             # Don't penalize re-submission of a CORRECT diagnosis
             if self._diagnosis_was_correct:
                 return 0.0, {}, "Diagnosis already submitted (correct). No change."
-            return rc.duplicate_diagnosis, {"duplicate_diagnosis": rc.duplicate_diagnosis}, "Diagnosis already submitted."
-        self._diagnosis_submitted = True
+            # Bug #2 fix: Allow one revision attempt at 50% reward weight
+            if not self._revision_used:
+                self._revision_used = True
+                self._diagnosis_submitted = False  # Reset to allow re-grade
+                # Bug H: Guard against exceptions leaving _diagnosis_submitted=False
+                try:
+                    r, b, f = self._grade_diagnosis_inner(params)
+                except Exception:
+                    self._diagnosis_submitted = True  # restore on failure
+                    raise
+                return round(r * 0.5, 4), {k: round(v * 0.5, 4) for k, v in b.items()}, f"[REVISED x0.5] {f}"
+            return rc.duplicate_diagnosis, {"duplicate_diagnosis": rc.duplicate_diagnosis}, "No more revisions allowed."
+        return self._grade_diagnosis_inner(params)
+
+    def _grade_diagnosis_inner(self, params: Dict[str, Any]) -> tuple:
+        """Core diagnosis grading logic. Separated for revision support."""
+        reward = 0.0
+        breakdown = {}
+        feedback_parts = []
+        rc = self._rc
+
 
         # Root cause identification
         agent_root_cause = params.get("root_cause", "")
@@ -384,7 +469,8 @@ class Grader:
             )
 
         # Symmetric confidence calibration
-        confidence = params.get("confidence", 0.5)
+        # Bug N: Clamp confidence to [0, 1] — reject nonsensical values
+        confidence = max(0.0, min(1.0, float(params.get("confidence", 0.5))))
         actual_accuracy = 1.0 if agent_root_cause == self._config.root_cause_service else 0.0
         calibration_error = abs(confidence - actual_accuracy)
         if calibration_error < rc.confidence_calibration_tolerance:
@@ -397,6 +483,7 @@ class Grader:
             breakdown["confidence_miscalibrated"] = rc.confidence_miscalibrated
             feedback_parts.append("⚠️ Overconfident wrong diagnosis penalized.")
 
+        self._diagnosis_submitted = True
         return reward, breakdown, " | ".join(feedback_parts)
 
     def get_final_score(self) -> GradeResult:

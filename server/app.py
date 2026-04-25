@@ -7,7 +7,7 @@ The openenv validate tool requires:
   - [project.scripts] server = "server.app:main"
 """
 
-import uvicorn
+import uvicorn # type: ignore
 from incident_env.server.app import app  # noqa: F401
 
 

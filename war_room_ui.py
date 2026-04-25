@@ -1,11 +1,7 @@
-import json
-import threading
-import time
 import os
-import gradio as gr
-import plotly.graph_objects as go
-import uvicorn
-from fastapi import FastAPI
+import gradio as gr # type: ignore
+import plotly.graph_objects as go # type: ignore
+import uvicorn # type: ignore
 
 from incident_env.server.app import app as fast_app
 from agent.orchestrator import MATPOOrchestrator
@@ -190,7 +186,7 @@ with gr.Blocks(theme=gr.themes.Monochrome(), css=custom_css) as demo:
             yield (
                 generate_system_graph({}),
                 f"<div class='terminal-window'>ERROR: {str(e)}</div>",
-                f"<div class='terminal-window cmdr-window'>ERROR</div>",
+                "<div class='terminal-window cmdr-window'>ERROR</div>",
                 "## Reward: ERR",
                 "### Status: FAILED 🔴"
             )
