@@ -170,13 +170,27 @@ sed -i 's/^license = "Apache-2.0"/license = {{text = "Apache-2.0"}}/' /tmp/unslo
 # Verify the patch was applied
 echo "  ==> Patched unsloth/pyproject.toml license line:"
 grep "^license" /tmp/unsloth_src/pyproject.toml
-# Install the patched unsloth first (without [colab-new] extras that cause re-fetch)
-python3 -m pip install --quiet /tmp/unsloth_src
+# Install the patched unsloth with --no-deps to prevent pip from upgrading torch.
+# ROOT CAUSE of previous failure: pip install /tmp/unsloth_src pulled torch 2.11.0,
+# which broke torchvision==0.21.0 (still pinned to 2.6.0) → unsloth import crash.
+python3 -m pip install --quiet --no-deps /tmp/unsloth_src
+# Install unsloth's non-torch runtime deps that --no-deps skipped
+python3 -m pip install --quiet \
+    "accelerate>=0.26.0" \
+    "transformers>=4.38.0" \
+    "tokenizers>=0.15.0" \
+    "sentencepiece>=0.1.99" \
+    "packaging>=23.0" \
+    "triton" || true
 # xformers: install but don't abort if H200 has no wheel yet (triton fallback is fine)
 python3 -m pip install --quiet "xformers" 2>&1 | tail -3 || echo "WARNING: xformers not available — using triton fallback"
-# BUG #5 FIX: Explicitly verify unsloth is importable before wasting GPU time on training.
-# A partial install failure would otherwise surface as a cryptic ImportError mid-run.
-python3 -c "from unsloth import FastLanguageModel; print('unsloth OK')" || {{ echo "FATAL: unsloth install failed — aborting"; exit 1; }}
+# Verify unsloth is importable and torch was NOT upgraded
+python3 -c "
+import torch, torchvision
+print(f'torch={torch.__version__} torchvision={torchvision.__version__}')
+from unsloth import FastLanguageModel
+print('unsloth OK')
+" || {{ echo "FATAL: unsloth import failed — aborting"; exit 1; }}
 
 echo "  ==> Installing BlastRadius [train_sft] deps (excluding unsloth — already installed)"
 # Install everything in [train_sft] except the unsloth URL (already installed above)
@@ -190,7 +204,7 @@ python3 -m pip install --quiet \
     "plotly>=5.0.0" \
     "networkx>=3.0" \
     "python-dotenv>=1.0.0"
-# Install the environment package itself (no --no-build-isolation needed, our pyproject.toml is clean)
+# Install the environment package itself (our pyproject.toml is PEP-621 clean)
 python3 -m pip install --quiet -e "." --no-deps
 
 echo "==> post-pip: torch check"
