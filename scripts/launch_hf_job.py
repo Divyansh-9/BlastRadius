@@ -156,7 +156,8 @@ print("ok", torch.cuda.get_device_name(0))
 PY
 
 echo "==> Stage 1: SFT training"
-python3 -m agent.train_sft \\
+export PYTHONIOENCODING=utf-8
+python3 -u -m agent.train_sft \\
     --model unsloth/Qwen2.5-14B-Instruct-bnb-4bit \\
     --data sft_data/expert_trajectories.jsonl \\
     --output models/sft_checkpoint
@@ -204,6 +205,10 @@ cmd = [
     f"HF_TOKEN={HF_TOKEN}",
     "--secrets",
     f"WANDB_API_KEY={WANDB_API_KEY}",
+    "-e",
+    "HF_DEBUG=1",
+    "-e",
+    "PYTHONUNBUFFERED=1",
     "-e",
     f"WANDB_ENTITY={WANDB_ENTITY}",
     "-e",
