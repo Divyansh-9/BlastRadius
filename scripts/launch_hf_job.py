@@ -4,15 +4,15 @@ launch_hf_job.py
 Spawns a Hugging Face Job that runs the full SFT + GRPO pipeline
 for BlastRadius end-to-end.
 
-Hardware / image strategy (read this if H200 + PyTorch was failing):
-- HF "h200" nodes expose the GPU to `nvidia-smi`, but the stock
-  `pytorch/pytorch` wheels can still return `torch.cuda.is_available() == False`
-  with "Error 802: system not yet initialized" because the *user-mode*
-  CUDA stack in the container does not line up with the host driver the
-  way Jobs wires devices. The **NVIDIA NGC** `nvcr.io/nvidia/pytorch` images
-  ship a tested driver/runtime pairing and are the supported fix on H200.
-- `a100-large` is more predictable with the official `pytorch/pytorch` CUDA
-  12.1 devel image, but is often queue-blocked during hackathon crunch.
+Hardware / image strategy (HF Jobs; verified Apr 2026):
+- **H200** + host driver **580 / CUDA 13.0**: use
+  `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel`. On the same nodes,
+  `2.4-cuda12.1`, `2.11-cuda13`, and `nvcr.io/nvidia/pytorch:24.10-py3`
+  can all return `torch.cuda.is_available() == False` with **Error 802**
+  while `nvidia-smi` still works — the 12.4 user-mode stack + forward-compat
+  to this driver is what actually works for PyTorch.
+- **a100-large** is still the most battle-tested profile; default image
+  `pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel` (override with `HF_JOB_IMAGE`).
 
 vLLM is installed *after* SFT (see `pyproject.toml` `train_sft` / `train_grpo`)
 so pip cannot replace torch + bitsandbytes before the cold-start SFT run.
@@ -56,16 +56,9 @@ HUB_MODEL_ID = os.environ["HUB_MODEL_ID"]
 FLAVOR = os.environ.get("HF_JOB_FLAVOR", "h200")
 TIMEOUT = os.environ.get("HF_JOB_TIMEOUT", "5h")
 
-# NGC: full CUDA user-mode stack (fixes torch init on many HF h200 workers).
-# Hopper/H200 on HF Jobs sometimes hits CUDA 802 ("system not yet initialized") if
-# PyTorch loads before the device stack is ready — 25.x NGC images track newer
-# host drivers; see JOB_SCRIPT for retry/warmup as well.
-# Official pytorch images work better on a100 where the driver/runtime gap is smaller.
 def _default_image(flavor: str) -> str:
     if flavor.startswith("h200"):
-        # 25.01 verified on NGC; pairs better with current H200 host drivers than 24.10 when 802 appears.
-        # Fallback: HF_JOB_IMAGE=nvcr.io/nvidia/pytorch:24.10-py3
-        return "nvcr.io/nvidia/pytorch:25.01-py3"
+        return "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel"
     return "pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel"
 
 
@@ -104,7 +97,7 @@ export PIP_BREAK_SYSTEM_PACKAGES=1
 export PIP_ROOT_USER_ACTION=ignore
 
 _ok=0
-for _attempt in $(seq 1 45); do
+for _attempt in $(seq 1 5); do
   if python3 -c "
 import os, sys
 print('LD_LIBRARY_PATH=', (os.environ.get('LD_LIBRARY_PATH') or '')[:500])
@@ -118,11 +111,11 @@ sys.exit(1)
     _ok=1
     break
   fi
-  echo "  [warmup] torch CUDA not ready (attempt $_attempt/45), sleeping 2s — HF H200 802 race?"
+  echo "  [warmup] torch CUDA not ready (attempt $_attempt/5), sleep 2s (HF h200 802 / init race?)"
   sleep 2
 done
 if [ "$_ok" -ne 1 ]; then
-  echo "FATAL: torch sees no CUDA before any project pip install after warm-up retries. Try HF_JOB_IMAGE=nvcr.io/nvidia/pytorch:25.04-py3 or flavor a100-large."
+  echo "FATAL: torch does not see CUDA. On HF h200 use: HF_JOB_IMAGE=pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel (forward-compat w/ driver 580), or set HF_JOB_FLAVOR=a100-large."
   exit 1
 fi
 
