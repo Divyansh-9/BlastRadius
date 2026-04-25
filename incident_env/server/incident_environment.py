@@ -140,8 +140,17 @@ class IncidentEnvironment:
             total_reward=saved_state.get("total_reward", 0.0),
             done=saved_state.get("done", False),
             is_resolved=saved_state.get("is_resolved", False),
-            wrong_diagnoses=saved_state.get("wrong_diagnoses", 0),  # Bug #5: restore 3-strike counter
+            wrong_diagnoses=saved_state.get("wrong_diagnoses", 0),
             root_cause_identified=saved_state.get("root_cause_identified", False),
+            # Bug C: Restore ALL remaining IncidentState fields
+            root_cause_service=saved_state.get("root_cause_service", ""),
+            agent_diagnosis=saved_state.get("agent_diagnosis", None),
+            actions_taken=saved_state.get("actions_taken", []),
+            step_rewards=saved_state.get("step_rewards", []),
+            services_resolved=saved_state.get("services_resolved", []),
+            collateral_damage=saved_state.get("collateral_damage", 0),
+            time_elapsed_minutes=saved_state.get("time_elapsed_minutes", 0),
+            diagnosis_accuracy=saved_state.get("diagnosis_accuracy", 0.0),
         )
 
         self._diagnosis_attempts = snapshot.get("diagnosis_attempts", 0)
@@ -244,6 +253,9 @@ class IncidentEnvironment:
         command = action.command.lower().strip()
         if command == "_parse_failure":
             self._state.step_count += 1
+            # Bug E: Time must still advance — prevent free cascade prevention
+            self._graph.tick(1)
+            self._state.time_elapsed_minutes = self._graph.time_minutes
             obs = IncidentObservation(
                 output="ERROR: Agent produced unparseable output. No action taken.",
                 services_status=self._obfuscate(self._graph.get_status_summary()),
@@ -302,9 +314,11 @@ class IncidentEnvironment:
         self._state.collateral_damage = self._graph.count_collateral_damage()
 
         # Grade this step
+        # Bug B: Deobfuscate target before grading — grader compares against real service names
+        real_target = self._deobfuscate(action.target) if action.target else ""
         grade = self._grader.grade_step(
             command=command,
-            target=action.target,
+            target=real_target,
             params=action.parameters,
             action_succeeded=action_succeeded,
             services_now_healthy=self._state.services_resolved,
@@ -336,11 +350,13 @@ class IncidentEnvironment:
                     grade.feedback = "Episode Terminated: Maximum incorrect diagnoses reached (Anti-Cheat)."
 
         # Anti-cheat: action repetition damping
+        # Bug D: Write to grader._cumulative_reward so it persists across step syncs
         action_key = (command, self._deobfuscate(action.target) if action.target else "")
         repeat_count = sum(1 for prev in self._action_history if prev == action_key)
         if repeat_count >= 3 and command not in ("check_status", "diagnose"):
             damping = -0.01 * (repeat_count - 2)
-            self._state.total_reward += damping
+            self._grader._cumulative_reward += damping  # write to grader, not state
+            self._state.total_reward = self._grader.cumulative_reward  # re-sync
         self._action_history.append(action_key)
 
         # Fix #8: Check if done — distinguish timeout from resolution
