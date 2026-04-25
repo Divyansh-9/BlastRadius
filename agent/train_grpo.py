@@ -359,19 +359,23 @@ def main():
 
     threading.Thread(target=_wall_clock_watchdog, daemon=True, name="WallClockWatchdog").start()
 
-    if wandb and args.wandb_project:
+    # Use a local alias so that the fallback assignment (`_wandb = None`) does NOT
+    # create an UnboundLocalError — assigning to `wandb` directly inside a function
+    # makes Python treat every reference to it as local, crashing the `if` check above.
+    import wandb as _wandb_mod
+    _wandb = _wandb_mod  # module-level wandb captured safely
+    if _wandb and args.wandb_project:
         try:
-            wandb.init(
+            _wandb.init(
                 project=args.wandb_project,
                 # Do NOT pass entity — let W&B auto-detect from the API key.
-                # Passing the wrong entity (e.g. HF account ID) causes CommError.
                 name=f"grpo-{args.hardware_profile}-G{num_generations}-{int(time.time())}",
                 config={"hardware_profile": args.hardware_profile, "use_vllm": args.use_vllm}
             )
-            print(f"W&B run: {wandb.run.url}")
+            print(f"W&B run: {_wandb.run.url}")
         except Exception as _wb_err:
             print(f"WARNING: W&B init failed ({_wb_err}) — continuing without tracking.")
-            wandb = None
+            _wandb = None
 
     # 4. GRPO Configuration
     training_args = GRPOConfig(
