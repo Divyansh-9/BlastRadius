@@ -338,13 +338,19 @@ def main():
 
     threading.Thread(target=_wall_clock_watchdog, daemon=True, name="WallClockWatchdog").start()
 
-    if wandb and args.wandb_entity:
-        wandb.init(
-            project=args.wandb_project,
-            entity=args.wandb_entity,
-            name=f"grpo-{args.hardware_profile}-G{num_generations}-{int(time.time())}",
-            config={"hardware_profile": args.hardware_profile, "use_vllm": args.use_vllm}
-        )
+    if wandb and args.wandb_project:
+        try:
+            wandb.init(
+                project=args.wandb_project,
+                # Do NOT pass entity — let W&B auto-detect from the API key.
+                # Passing the wrong entity (e.g. HF account ID) causes CommError.
+                name=f"grpo-{args.hardware_profile}-G{num_generations}-{int(time.time())}",
+                config={"hardware_profile": args.hardware_profile, "use_vllm": args.use_vllm}
+            )
+            print(f"W&B run: {wandb.run.url}")
+        except Exception as _wb_err:
+            print(f"WARNING: W&B init failed ({_wb_err}) — continuing without tracking.")
+            wandb = None
 
     # 4. GRPO Configuration
     training_args = GRPOConfig(
@@ -368,7 +374,7 @@ def main():
         push_to_hub=bool(args.hub_model_id),
         hub_model_id=args.hub_model_id if args.hub_model_id else None,
         hub_strategy="checkpoint",
-        report_to="wandb" if wandb and args.wandb_entity else "none",
+        report_to="wandb" if wandb else "none",
         bf16=is_bf16,
         fp16=not is_bf16,
     )

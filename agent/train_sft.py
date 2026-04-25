@@ -138,12 +138,15 @@ def main():
         bf16=is_bf16,
         logging_steps=10,
         output_dir=args.output,
-        optim="adamw_torch_fused", 
+        optim="adamw_torch_fused",
         dataset_text_field="text",
         max_length=max_seq_length,
         save_strategy="steps",
         save_steps=100,
         save_total_limit=2,
+        # Disable W&B for SFT — entity name mismatch causes CommError crash.
+        # GRPO handles its own wandb.init() with the correct project/entity.
+        report_to="none",
     )
 
     # 6. Execute Training

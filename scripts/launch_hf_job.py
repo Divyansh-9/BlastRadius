@@ -209,7 +209,6 @@ python3 -u -m agent.train_grpo \\
     --output models/grpo_checkpoint \\
     --hardware-profile h200 \\
     --wandb-project {WANDB_PROJECT} \\
-    --wandb-entity {WANDB_ENTITY} \\
     --hub-model-id {HUB_MODEL_ID} \\
     --max-runtime-hours 4.0
 
@@ -237,8 +236,8 @@ cmd = [
     "HF_DEBUG=1",
     "-e",
     "PYTHONUNBUFFERED=1",
-    "-e",
-    f"WANDB_ENTITY={WANDB_ENTITY}",
+    # NOTE: WANDB_ENTITY intentionally NOT passed — we let W&B auto-detect from
+    # WANDB_API_KEY. Passing HF account ID as entity causes "entity not found" CommError.
     "-e",
     f"WANDB_PROJECT={WANDB_PROJECT}",
     "-e",
