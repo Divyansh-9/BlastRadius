@@ -187,11 +187,22 @@ def environment_reward_func(completions: List[str], role: List[str], task_id: Li
 # Preprocessing Dataset
 # ─────────────────────────────────────────────────────────────
 
-# Difficulty tier ordering for curriculum sorting
+# Difficulty tier ordering for curriculum sorting.
+# Bug E fix: keys must match the literal task_id values registered in
+# incident_env.server.scenarios.SCENARIOS — bare names like "db_failover"
+# silently fell through to the default tier (99) because the real key is
+# "hard_db_failover".
 _DIFFICULTY_ORDER = {
-    "easy": 0, "medium": 1, "hard": 2,
-    "db_failover": 3, "cert_expiry": 3, "redis_memory_leak": 3,
-    "k8s_eviction": 4, "dns_propagation": 4, "regex_catastrophe": 4, "s3_keyspace": 4,
+    "easy": 0,
+    "medium": 1,
+    "hard": 2,
+    "easy_dns_propagation": 0,
+    "easy_redis_oom": 0,
+    "medium_cert_expiry": 1,
+    "medium_k8s_eviction": 1,
+    "hard_regex_catastrophe": 2,
+    "hard_db_failover": 2,
+    "hard_s3_keyspace_overflow": 2,
 }
 
 

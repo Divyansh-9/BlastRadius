@@ -22,10 +22,6 @@ venv/
 # Local model checkpoints (large, pushed to HF Hub instead)
 models/
 
-# One-off utility scripts
-fix_notebook.py
-
+# One-off utility scripts (kept local, not committed)
 scrub_token.py
-sync_hf_space.py
-fix_notebook.py
 push_blog_to_hf.py

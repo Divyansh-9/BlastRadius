@@ -149,7 +149,7 @@ def main():
         start_time = time.time()
         
         try:
-            rollout = orchestrator.run_episode(task_id, max_steps=20, verbose=False)
+            rollout = orchestrator.run_episode(task_id, max_steps=25, verbose=False)
             elapsed = time.time() - start_time
             
             score = rollout.final_score

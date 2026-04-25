@@ -162,7 +162,7 @@ def get_model_action(
         phase_msg = "🔴 PHASE: FIX — STOP investigating. Apply fixes NOW or you will run out of steps!"
 
     # Build context from observation
-    user_prompt = f"""Step {step_num}/20 | Reward: {last_reward:+.4f} | {phase_msg}
+    user_prompt = f"""Step {step_num}/{MAX_STEPS} | Reward: {last_reward:+.4f} | {phase_msg}
 Time elapsed: {observation.get('time_elapsed_minutes', 0)} min | Severity: {observation.get('incident_severity', 'unknown')}
 
 Service Status: {json.dumps(observation.get('services_status', {}))}

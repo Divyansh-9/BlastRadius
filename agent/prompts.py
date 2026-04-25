@@ -1,7 +1,7 @@
 """
 MATPO Prompt Definitions for BlastRadius
 =========================================
-Single model, dual role. The same Qwen2.5-1.5B-Instruct model receives
+Single model, dual role. The same Qwen2.5-7B-Instruct (4-bit) model receives
 different system prompts depending on which "persona" is active.
 
 Why this matters for GRPO:

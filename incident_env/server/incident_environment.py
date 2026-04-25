@@ -51,6 +51,11 @@ class IncidentEnvironment:
         self._obf_map: Dict[str, str] = {}
         self._action_history: List[tuple] = []  # (command, target) pairs for repetition detection
         self._diagnosis_attempts: int = 0  # escalating penalty counter
+        # Bug A fix: remember the literal task_id that reset() was called with so
+        # save_snapshot/restore_snapshot can round-trip ANY scenario (including
+        # specialized ones like "hard_s3_keyspace_overflow") instead of collapsing
+        # them to the generic difficulty bucket ("easy"/"medium"/"hard").
+        self._task_id: str = "easy"
 
     def _obfuscate(self, data: Any) -> Any:
         if not self._eval_mode or not self._obf_map:
@@ -91,10 +96,11 @@ class IncidentEnvironment:
         Used by GRPO to freeze state at step N, then restore it
         independently for each of G=4 candidate completions.
         """
-        # Use task_difficulty (e.g. "easy") which maps to SCENARIOS keys,
-        # NOT scenario_id (e.g. "easy_db_pool") which is internal.
+        # Bug A fix: persist the literal task_id used at reset() so restore can
+        # look up the EXACT scenario from SCENARIOS, not collapse specialized
+        # scenarios down to their generic difficulty bucket.
         return {
-            "task_id": self._state.task_difficulty if self._state else "easy",
+            "task_id": self._task_id,
             "state": copy.deepcopy(asdict(self._state)),
             "graph_snapshot": self._graph.save_snapshot() if self._graph else {},
             "grader_snapshot": self._grader.save_snapshot() if self._grader else {},
@@ -117,6 +123,9 @@ class IncidentEnvironment:
         self._graph = self._scenario.build_service_graph()
         self._eval_mode = False
         self._obf_map = {}
+        # Bug A fix: keep the literal task_id in sync so subsequent save_snapshot
+        # calls on the restored env still round-trip cleanly.
+        self._task_id = task_id
 
         # Restore graph mutable state
         if self._graph and snapshot.get("graph_snapshot"):
@@ -181,6 +190,9 @@ class IncidentEnvironment:
         self._graph = self._scenario.build_service_graph()
         self._eval_mode = eval_mode
         self._obf_map = {}
+        # Bug A fix: remember the literal task_id (e.g. "hard_s3_keyspace_overflow")
+        # so save_snapshot/restore_snapshot can round-trip the EXACT scenario.
+        self._task_id = task_id
         
         self._action_history = []
         self._diagnosis_attempts = 0

@@ -6,7 +6,7 @@ This script generates expert Chain-of-Thought (CoT) trajectories for the
 Cold-Start SFT phase (Stage 1 of the DeepSeek R1 recipe).
 
 WHY THIS STAGE EXISTS:
-Small models (1.5B) attempting GRPO from scratch often suffer "entropy
+Small models (7B 4-bit) attempting GRPO from scratch often suffer "entropy
 collapse" — they start outputting identical responses and training stalls.
 By first fine-tuning on ~500 expert demonstrations, the model learns:
 1. The correct OUTPUT FORMAT (<think>...</think><action>...</action>)
