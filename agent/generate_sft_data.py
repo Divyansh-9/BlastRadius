@@ -56,6 +56,7 @@ from agent.prompts import (
     SCOUT_SYSTEM_PROMPT,
     COMMANDER_SYSTEM_PROMPT,
 )
+from agent.orchestrator import score_triage, get_phase
 
 
 # ─────────────────────────────────────────────────────────────
@@ -120,15 +121,15 @@ class ExpertEpisodeRunner:
         history: List[str] = []
 
         # Reset environment directly (no HTTP)
-        obs = self.env.reset(task_id=task_id)
-        observation = obs if isinstance(obs, dict) else obs.__dict__ if hasattr(obs, '__dict__') else {"output": str(obs)}
-
-        # Try to get the observation dict properly
-        state = self.env.state
-        if isinstance(state, dict):
-            observation = state
-        elif hasattr(state, '__dict__'):
-            observation = state.__dict__
+        # Fix #3: Trust the return value of reset(). Never overwrite with
+        # self.env.state which may contain stale data from previous episodes.
+        result = self.env.reset(task_id=task_id)
+        if isinstance(result, dict):
+            observation = result.get("observation", result)
+        elif hasattr(result, '__dict__'):
+            observation = vars(result)
+        else:
+            observation = {"output": str(result)}
 
         step_num = 0
         done = False
@@ -156,7 +157,7 @@ class ExpertEpisodeRunner:
 
             # ── COMMANDER TURN ──
             cmdr_user_prompt = self._build_commander_prompt(
-                triage, step_num, last_reward, history
+                triage, step_num, last_reward, history, observation
             )
             cmdr_response = self._teacher_call(COMMANDER_SYSTEM_PROMPT, cmdr_user_prompt)
 
@@ -194,9 +195,12 @@ class ExpertEpisodeRunner:
                 else:
                     last_reward = 0.0
 
-                # Tag the reward onto the last two training examples
-                training_examples[-1]["reward"] = last_reward
-                training_examples[-2]["reward"] = last_reward
+                # Fix #1: Scout gets independent triage-quality reward,
+                # Commander gets the actual environment reward.
+                training_examples[-1]["reward"] = last_reward  # Commander
+                training_examples[-2]["reward"] = score_triage(
+                    triage, observation
+                )  # Scout — independent signal
 
             except Exception as e:
                 print(f"  [ENV ERROR] Step {step_num}: {e}")
@@ -235,16 +239,11 @@ Output: {str(output)[:1200]}
 Recent History: {'; '.join(history[-3:]) if history else 'Episode start'}"""
 
     def _build_commander_prompt(
-        self, triage: str, step_num: int, last_reward: float, history: List[str]
+        self, triage: str, step_num: int, last_reward: float, history: List[str],
+        observation: Dict = None
     ) -> str:
-        if step_num <= 2:
-            phase = "🔍 INVESTIGATE — Build situational awareness first."
-        elif step_num <= 5:
-            phase = "🔍 DEEP INVESTIGATE — Check logs/dependencies of suspect services."
-        elif step_num <= 8:
-            phase = "⚠️ DIAGNOSE — Submit your root cause analysis NOW."
-        else:
-            phase = "🔴 FIX — Apply fixes immediately. Time is running out!"
+        # Fix #4: Use state-aware phase heuristic instead of hard-coded step thresholds
+        phase = get_phase(observation or {}, step_num)
 
         return f"""Step {step_num}/25 | Last Reward: {last_reward:+.4f} | {phase}
 
