@@ -146,10 +146,10 @@ cd /workspace
 
 echo "==> pip: Stage 1 only (train_sft — no vLLM yet)"
 python3 -m pip install --quiet --upgrade pip
-python3 -m pip install --quiet "setuptools>=68" wheel
-# Do NOT use --no-build-isolation here: resolving .[train_sft] metadata (incl. git deps)
-# needs an isolated PEP 517 env; no-build-isolation caused "Preparing metadata failed" on HF.
-python3 -m pip install --quiet -e ".[train_sft]"
+# Install build dependencies manually and pin setuptools < 69 to bypass unsloth's invalid PEP-621 license error.
+# unsloth requires setuptools-scm.
+python3 -m pip install --quiet "setuptools<69.0.0" "setuptools-scm" wheel
+python3 -m pip install --quiet -e ".[train_sft]" --no-build-isolation
 
 echo "==> post-pip: torch check"
 python3 <<'PY'
