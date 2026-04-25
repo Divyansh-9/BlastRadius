@@ -213,25 +213,53 @@ python3 -c "import torch; assert torch.cuda.is_available(); print('Post-pip CUDA
 
 echo "==> Downloading GRPO LoRA adapter from Hub"
 python3 << 'DOWNLOAD'
-import os
-from huggingface_hub import snapshot_download
+import os, shutil
+from huggingface_hub import snapshot_download, list_repo_files, hf_hub_download
+from pathlib import Path
+
 hub_id = "{HUB_MODEL_ID}"
-out = "/workspace/models/grpo_adapter"
-snapshot_download(
-    repo_id=hub_id,
-    local_dir=out,
-    allow_patterns=["grpo_checkpoint/**"],
-    token=os.environ.get("HF_TOKEN"),
-)
-import shutil, os
-# Flatten: move grpo_checkpoint/* -> /workspace/models/grpo_adapter/
-src = os.path.join(out, "grpo_checkpoint")
-if os.path.isdir(src):
-    for f in os.listdir(src):
-        shutil.move(os.path.join(src, f), os.path.join(out, f))
-    os.rmdir(src)
+out    = "/workspace/models/grpo_adapter"
+token  = os.environ.get("HF_TOKEN")
+os.makedirs(out, exist_ok=True)
+
+# -- Inspect what's actually on the Hub --
+all_files = list(list_repo_files(hub_id, repo_type="model", token=token))
+print(f"Hub repo has {{len(all_files)}} files:")
+for f in all_files[:30]:
+    print(f"  {{f}}")
+
+# -- Detect structure --
+# Case A: files are in grpo_checkpoint/ subfolder
+# Case B: adapter files are at root (adapter_config.json, etc.)
+has_subfolder = any(f.startswith("grpo_checkpoint/") for f in all_files)
+has_root_adapter = any("adapter_config.json" in f and "/" not in f for f in all_files)
+
+if has_subfolder:
+    print("Detected: grpo_checkpoint/ subfolder — downloading with pattern")
+    snapshot_download(
+        repo_id=hub_id, local_dir=out,
+        allow_patterns=["grpo_checkpoint/**", "*.json", "*.safetensors"],
+        token=token,
+    )
+    # Flatten subfolder into out/
+    src = os.path.join(out, "grpo_checkpoint")
+    if os.path.isdir(src):
+        for f in os.listdir(src):
+            shutil.move(os.path.join(src, f), os.path.join(out, f))
+        os.rmdir(src)
+elif has_root_adapter:
+    print("Detected: adapter files at root — downloading all")
+    snapshot_download(
+        repo_id=hub_id, local_dir=out,
+        ignore_patterns=["*.md", "benchmark_results/**"],
+        token=token,
+    )
+else:
+    print("Downloading everything and inspecting...")
+    snapshot_download(repo_id=hub_id, local_dir=out, token=token)
+
 print("Adapter ready at:", out)
-import os; [print(" ", f) for f in os.listdir(out)]
+print("Files:", os.listdir(out))
 DOWNLOAD
 
 echo "==> Writing inference server script"
