@@ -393,7 +393,7 @@ class Grader:
             if self._diagnosis_was_correct:
                 return 0.0, {}, "Diagnosis already submitted (correct). No change."
             # Bug #2 fix: Allow one revision attempt at 50% reward weight
-            if not getattr(self, '_revision_used', False):
+            if not self._revision_used:
                 self._revision_used = True
                 self._diagnosis_submitted = False  # Reset to allow re-grade
                 r, b, f = self._grade_diagnosis_inner(params)
