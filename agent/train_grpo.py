@@ -378,10 +378,10 @@ def main():
             _wandb = None
 
     # 4. GRPO Configuration
+    # trl==0.13.0 GRPOConfig does NOT support vllm_device / vllm_gpu_memory_utilization.
+    # Those were added in trl>=0.15. Only pass use_vllm (bool).
     training_args = GRPOConfig(
         use_vllm=args.use_vllm,
-        vllm_device="cuda:0" if args.use_vllm else "auto",
-        vllm_gpu_memory_utilization=vllm_gpu_memory_utilization if args.use_vllm else 0.0,
         num_generations=num_generations,
         max_prompt_length=1024,
         max_completion_length=768,
@@ -399,7 +399,7 @@ def main():
         push_to_hub=bool(args.hub_model_id),
         hub_model_id=args.hub_model_id if args.hub_model_id else None,
         hub_strategy="checkpoint",
-        report_to="wandb" if wandb else "none",
+        report_to="wandb" if _wandb else "none",
         bf16=is_bf16,
         fp16=not is_bf16,
     )
