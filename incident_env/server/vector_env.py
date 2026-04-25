@@ -12,8 +12,16 @@ from typing import List, Dict, Any, Optional
 from incident_env.server.incident_environment import IncidentEnvironment
 from incident_env.models import IncidentAction
 
+_worker_env = None
+
+def _get_worker_env() -> IncidentEnvironment:
+    global _worker_env
+    if _worker_env is None:
+        _worker_env = IncidentEnvironment()
+    return _worker_env
+
 def _worker_reset(task_id: str, eval_mode: bool) -> Dict[str, Any]:
-    env = IncidentEnvironment()
+    env = _get_worker_env()
     result = env.reset(task_id=task_id, eval_mode=eval_mode)
     return {
         "observation": result.get("observation", {}),
@@ -21,7 +29,7 @@ def _worker_reset(task_id: str, eval_mode: bool) -> Dict[str, Any]:
     }
 
 def _worker_step(snapshot: dict, action_dict: dict) -> Dict[str, Any]:
-    env = IncidentEnvironment()
+    env = _get_worker_env()
     # The snapshot contains everything needed to perfectly resume
     env.restore_snapshot(snapshot)
     

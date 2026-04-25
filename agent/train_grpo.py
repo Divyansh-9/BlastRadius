@@ -34,7 +34,10 @@ except ImportError:
     wandb = None
 
 from datasets import load_dataset
-from transformers import TrainingArguments, TrainerCallback
+try:
+    from transformers.trainer_callback import TrainerCallback
+except ImportError:
+    TrainerCallback = object
 
 try:
     from unsloth import FastLanguageModel, PatchFastRL, is_bfloat16_supported
@@ -97,6 +100,12 @@ def format_reward_func(completions: List[str], role: List[str], **kwargs) -> Lis
             else:
                 reward -= 0.5
                 
+        # 4. Brevity / Anti-Rambling Penalty
+        # If the model fails to output a valid action, softly penalize it based on length
+        # to prevent it from farming the <think> reward indefinitely without concluding.
+        if reward < 0.5 and len(comp) > 100:
+            reward -= (len(comp) * 0.0001)
+
         rewards.append(reward)
     return rewards
 
@@ -141,6 +150,8 @@ def evaluate_single_env(comp: str, current_role: str, tid: str, snapshot: dict) 
         return 0.0
 
 
+_env_executor = None
+
 def environment_reward_func(completions: List[str], role: List[str], task_id: List[str], step: List[int], history_log: List[List[str]], **kwargs) -> List[float]:
     """
     The main RL signal. Uses ProcessPoolExecutor to evaluate all generated
@@ -149,14 +160,16 @@ def environment_reward_func(completions: List[str], role: List[str], task_id: Li
     """
     snapshots = kwargs.get("env_snapshot", [None] * len(completions))
     
-    # Process pool for parallel rollout evaluation
-    max_workers = min(len(completions), os.cpu_count() or 4)
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(evaluate_single_env, comp, current_role, tid, snapshot)
-            for comp, current_role, tid, snapshot in zip(completions, role, task_id, snapshots)
-        ]
-        rewards = [f.result() for f in futures]
+    global _env_executor
+    if _env_executor is None:
+        max_workers = os.cpu_count() or 4
+        _env_executor = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
+
+    futures = [
+        _env_executor.submit(evaluate_single_env, comp, current_role, tid, snapshot)
+        for comp, current_role, tid, snapshot in zip(completions, role, task_id, snapshots)
+    ]
+    rewards = [f.result() for f in futures]
 
     return rewards
 
@@ -193,6 +206,7 @@ def build_dataset_for_grpo(file_path: str):
             "task_id": example.get("task_id", "easy"),
             "step": example.get("step", 1),
             "history_log": history_log,
+            "env_snapshot": example.get("env_snapshot"),
         }
         
     return dataset.map(process_row)
@@ -281,7 +295,7 @@ def main():
         r=32,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
                         "gate_proj", "up_proj", "down_proj"],
-        lora_alpha=32,
+        lora_alpha=64,
         use_gradient_checkpointing="unsloth",
         random_state=3407,
     )
