@@ -1,16 +1,24 @@
 """
 launch_hf_job.py
 ─────────────────────────────────────────────────────────────
-Spawns a Hugging Face Job on a100-large that runs the full
-SFT + GRPO pipeline for BlastRadius end-to-end.
+Spawns a Hugging Face Job on H200 (or A100 via env override)
+that runs the full SFT + GRPO pipeline for BlastRadius end-to-end.
 
-Pipeline inside the job (~5 hours):
-    git clone main → pip install → train_sft → validate
-    → train_grpo (auto-pushes to HUB_MODEL_ID every 200 steps
-    via hub_strategy=checkpoint) → validate
+Why H200 default:
+    During the OpenEnv hackathon (~800 teams), A100-large is
+    queue-blocked while H200 has open capacity AND is half the
+    cost ($5/hr vs $10/hr) AND has 1.7x the VRAM (141GB vs 80GB).
+    The only catch: H200 nodes ship CUDA 13.0 driver, so we use
+    a pytorch:cuda12.8 base image (forward-compat works).
+
+Pipeline inside the job (~4-5 hours):
+    git clone main -> pip install -> train_sft -> validate
+    -> train_grpo (auto-pushes to HUB_MODEL_ID every 200 steps
+    via hub_strategy=checkpoint) -> validate
 
 Run locally:
-    python scripts/launch_hf_job.py
+    python scripts/launch_hf_job.py                # default H200
+    $env:HF_JOB_FLAVOR='a100-large'; python scripts/launch_hf_job.py
 Then monitor via WandB and:
     hf jobs logs   <job_id>
     hf jobs ps
@@ -49,21 +57,36 @@ HUB_MODEL_ID   = os.environ["HUB_MODEL_ID"]
 JOB_SCRIPT = f"""
 set -euo pipefail
 
-echo "==> Installing git (pytorch image lacks it)"
+echo "==> Apt: git + build essentials"
 apt-get update -qq
-apt-get install -y -qq git
+apt-get install -y -qq git build-essential
+
+echo "==> nvidia-smi (driver + GPU before any pip)"
+nvidia-smi
+
+echo "==> Pre-install torch sanity (image baseline)"
+python -c "import torch; print('IMAGE torch', torch.__version__, 'cuda', torch.version.cuda, 'is_available', torch.cuda.is_available()); assert torch.cuda.is_available(), 'CUDA broken in base image'"
 
 echo "==> Cloning BlastRadius main"
 git clone --branch main https://github.com/Divyansh-9/BlastRadius.git /workspace
 cd /workspace
 
-echo "==> Installing project + train extras"
-pip install --quiet -e '.[train]'
-pip install --quiet 'unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git'
-pip install --quiet 'trl>=0.12.0' wandb python-dotenv
+echo "==> Pip env hardening (PEP 668 + freeze torch to image build)"
+export PIP_BREAK_SYSTEM_PACKAGES=1
+export PIP_ROOT_USER_ACTION=ignore
+TORCH_VER=$(python -c "import torch; print(torch.__version__)")
+TORCH_CUDA=$(python -c "import torch; print(torch.version.cuda)")
+echo "Locking torch==$TORCH_VER (cuda $TORCH_CUDA) so deps cannot downgrade it"
+echo "torch==$TORCH_VER" > /tmp/torch.constraint
+export PIP_CONSTRAINT=/tmp/torch.constraint
 
-echo "==> nvidia-smi"
-nvidia-smi
+echo "==> Installing project + train extras (torch is locked)"
+pip install --quiet --upgrade pip
+pip install --quiet -e '.[train]' --no-build-isolation
+pip install --quiet 'trl>=0.12.0' wandb python-dotenv --no-build-isolation
+
+echo "==> Post-install torch sanity (must still see GPU)"
+python -c "import torch; print('POST torch', torch.__version__, 'cuda', torch.version.cuda, 'is_available', torch.cuda.is_available(), 'device', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE'); assert torch.cuda.is_available(), 'CUDA broken AFTER pip install — a dependency replaced torch'"
 
 echo "==> Stage 1: SFT training"
 python -m agent.train_sft \\
@@ -105,7 +128,7 @@ cmd = [
     "-e", f"WANDB_ENTITY={WANDB_ENTITY}",
     "-e", f"WANDB_PROJECT={WANDB_PROJECT}",
     "-e", f"HUB_MODEL_ID={HUB_MODEL_ID}",
-    "pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel",
+    os.environ.get("HF_JOB_IMAGE", "pytorch/pytorch:2.11.0-cuda13.0-cudnn9-devel"),
     "bash", "-c", JOB_SCRIPT,
 ]
 
