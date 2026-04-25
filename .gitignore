@@ -13,3 +13,14 @@ venv/
 .mypy_cache/
 *.log
 !docs/runs/*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Local model checkpoints (large, pushed to HF Hub instead)
+models/
+
+# One-off utility scripts
+fix_notebook.py
