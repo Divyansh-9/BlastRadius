@@ -41,9 +41,8 @@ import os
 import sys
 import time
 import argparse
-import random
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from openai import OpenAI
 
@@ -183,7 +182,7 @@ class ExpertEpisodeRunner:
             try:
                 action = IncidentAction(
                     command=action_dict.get("command", "check_status"),
-                    target=action_dict.get("target", None),
+                    target=action_dict.get("target") or "",
                     parameters=action_dict.get("parameters", {}),
                 )
                 result = self.env.step(action)
@@ -252,7 +251,7 @@ Recent History: {'; '.join(history[-3:]) if history else 'Episode start'}"""
 
     def _build_commander_prompt(
         self, triage: str, step_num: int, last_reward: float, history: List[str],
-        observation: Dict = None
+        observation: Optional[Dict] = None
     ) -> str:
         # Fix #4: Use state-aware phase heuristic instead of hard-coded step thresholds
         phase = get_phase(observation or {}, step_num)

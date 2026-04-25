@@ -149,7 +149,7 @@ class RewardConfig:
     speed_bonus_max: float = 0.10
 
     # Causal chain similarity
-    chain_similarity_threshold: float = 0.20
+    chain_similarity_threshold: float = 0.45
 
 
 # Default config instance
@@ -170,6 +170,9 @@ class ScenarioGradingConfig:
     Grading configuration for a specific scenario.
 
     Defines the ground truth that the grader evaluates against.
+    max_total_reward is computed analytically from the scenario shape
+    and the active RewardConfig, so normalization stays correct
+    across hyperparameter sweeps.
     """
     root_cause_service: str = ""
     root_cause_description: str = ""
@@ -178,7 +181,27 @@ class ScenarioGradingConfig:
     correct_fix_order: List[str] = field(default_factory=list)
     useful_investigation_targets: List[str] = field(default_factory=list)
     max_optimal_steps: int = 6
-    max_total_reward: float = 1.0
+    max_total_reward: float = 1.0  # legacy default; overridden by compute_max_total_reward
+
+    def compute_max_total_reward(self, rc: Optional["RewardConfig"] = None) -> float:
+        """Derive the theoretical max reward from the scenario shape + RewardConfig."""
+        if rc is None:
+            rc = DEFAULT_REWARD_CONFIG
+        total = 0.0
+        # Status checks (capped)
+        total += rc.status_check_reward * rc.max_status_checks_rewarded
+        # Investigation (one reward per useful target)
+        total += rc.useful_investigation * len(self.useful_investigation_targets)
+        # Diagnosis
+        total += rc.root_cause_correct
+        total += rc.causal_chain_max
+        total += rc.confidence_calibrated
+        # Fixes
+        total += rc.correct_fix * len(self.correct_fix_actions)
+        # Episode completion
+        total += rc.resolution_bonus
+        total += rc.speed_bonus_max
+        return round(total, 4)
 
 
 class Grader:
@@ -200,6 +223,8 @@ class Grader:
     ):
         self._config = config
         self._rc = reward_config or DEFAULT_REWARD_CONFIG
+        # Override hardcoded max_total_reward with analytic computation
+        self._config.max_total_reward = config.compute_max_total_reward(self._rc)
         self._investigated_services: set = set()
         self._diagnosis_submitted: bool = False
         self._diagnosis_was_correct: bool = False
@@ -382,9 +407,7 @@ class Grader:
 
     def _grade_diagnosis(self, params: Dict[str, Any]) -> tuple:
         """Grade a diagnosis submission with causal chain evaluation."""
-        reward = 0.0
-        breakdown = {}
-        feedback_parts = []
+
         rc = self._rc
 
         if self._diagnosis_submitted:
@@ -412,7 +435,6 @@ class Grader:
         feedback_parts = []
         rc = self._rc
 
-        self._diagnosis_submitted = True
 
         # Root cause identification
         agent_root_cause = params.get("root_cause", "")
@@ -461,6 +483,7 @@ class Grader:
             breakdown["confidence_miscalibrated"] = rc.confidence_miscalibrated
             feedback_parts.append("⚠️ Overconfident wrong diagnosis penalized.")
 
+        self._diagnosis_submitted = True
         return reward, breakdown, " | ".join(feedback_parts)
 
     def get_final_score(self) -> GradeResult:

@@ -550,11 +550,12 @@ class ServiceGraph:
     def is_fully_resolved(self) -> bool:
         return all(s.status == ServiceStatus.HEALTHY for s in self._services.values())
 
+    EXPLICIT_FIX_ACTIONS = {"restart", "rollback", "scale"}
+
     def get_resolved_services(self) -> List[str]:
-        # Bug F: Exclude auto-recoveries — only explicit agent actions count
         return [
             e["target"] for e in self._fix_history
-            if e.get("action") != "auto_recovery"
+            if e.get("action") in self.EXPLICIT_FIX_ACTIONS
         ]
 
     def count_collateral_damage(self) -> int:

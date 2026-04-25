@@ -1,5 +1,9 @@
 """Functional tests for the GRPO reward functions without requiring GPU/Unsloth."""
-import sys, types, importlib, importlib.util, builtins
+import sys
+import types
+import importlib
+import importlib.util
+import builtins
 sys.path.insert(0, '.')
 
 # ── Stub out Unsloth + TRL + datasets so train_grpo.py can be imported on CPU ──
@@ -25,9 +29,11 @@ def _mock_import(name, *args, **kwargs):
 
 builtins.__import__ = _mock_import
 _real_exit = sys.exit
-sys.exit = lambda *a: None
+sys.exit = lambda *a: None # type: ignore
 
 spec = importlib.util.spec_from_file_location('train_grpo', 'agent/train_grpo.py')
+assert spec is not None
+assert spec.loader is not None
 tg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tg)
 

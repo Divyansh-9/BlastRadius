@@ -21,7 +21,7 @@ completions = [
 roles = ["commander", "commander", "commander", "commander"]
 task_ids = ["easy", "easy", "easy", "easy"]
 steps = [3, 3, 3, 3]
-histories = [[], [], [], []]
+histories: list[list[str]] = [[], [], [], []]
 
 rewards = []
 for i, (comp, role, tid, step, history) in enumerate(
@@ -37,6 +37,7 @@ for i, (comp, role, tid, step, history) in enumerate(
         env.reset(task_id=tid)
         for _ in range(step - 1):
             env._state.time_elapsed_minutes += 5
+            assert env._graph is not None
             env._graph.tick(5)
     except Exception as e:
         print(f"  Completion {i}: ENV RESET FAILED: {e}")
