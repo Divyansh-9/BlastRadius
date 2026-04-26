@@ -353,11 +353,11 @@ Recent History: {'; '.join(history[-5:]) if history else 'Episode start'}"""
 
     def _build_commander_user_prompt(
         self, triage: str, step_num: int, last_reward: float, 
-        history: List[str], observation: Dict[str, Any]
+        history: List[str], observation: Dict[str, Any], max_steps: int
     ) -> str:
         """Build the Commander's user prompt. Used by both run_episode and run_episode_stream."""
         phase = get_phase(observation, step_num)  # Fix #4: state-aware phase
-        return f"""Step {step_num}/25 | Last Reward: {last_reward:+.4f} | {phase}
+        return f"""Step {step_num}/{max_steps} | Last Reward: {last_reward:+.4f} | {phase}
 
 [SCOUT TRIAGE REPORT]
 {triage}
@@ -393,13 +393,14 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
         last_reward: float,
         history: List[str],
         observation: Dict[str, Any],
+        max_steps: int,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         ROLE B: Commander — reads triage report + history, emits JSON action.
         Returns: (full_response, parsed_action_dict)
         """
         user_prompt = self._build_commander_user_prompt(
-            triage_report, step_num, last_reward, history, observation
+            triage_report, step_num, last_reward, history, observation, max_steps
         )
         
         full_response = ""
@@ -439,7 +440,19 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
         """
         rollout = Rollout(task_id=task_id)
         history: List[str] = []
+        action_history: List[str] = []
         cumulative_reward = 0.0
+
+        def is_repeat(action: Dict[str, Any], hist: List[str]) -> bool:
+            # We don't count diagnostic read commands in the anti-loop guard
+            cmd = action.get("command")
+            if cmd in ("check_status", "diagnose", "_parse_failure"):
+                return False
+            key = f"{cmd}_{action.get('target', '')}"
+            if key in hist:
+                return True
+            hist.append(key)
+            return False
 
         # Reset environment
         if verbose:
@@ -466,13 +479,19 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
             # ── ROLE B: Commander Decision ──
             last_reward = rollout.steps[-1].reward if rollout.steps else 0.0
             cmdr_user_prompt = self._build_commander_user_prompt(
-                triage, step_num, last_reward, history, observation
+                triage, step_num, last_reward, history, observation, max_steps
             )
             cmdr_response, action = self.run_commander(
-                triage, step_num, last_reward, history, observation
+                triage, step_num, last_reward, history, observation, max_steps
             )
             if verbose:
                 print(f"  [CMDR]  {json.dumps(action)}")
+
+            # ── Anti-Loop Guard ──
+            if is_repeat(action, action_history):
+                if verbose:
+                    print("  [WARN] Agent loop detected. Forcing check_status.")
+                action = {"command": "check_status", "target": "", "parameters": {}}
 
             # ── Execute Action (guard against _parse_failure → 422) ──
             if action.get("command") == "_parse_failure":
@@ -532,9 +551,13 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
                 break
 
         # ── Finalize ──
-        rollout.final_score = cumulative_reward
-        rollout.total_steps = len(history)
         info = env_result.get("info", {})
+        # Fix #3: Use grader's normalized final score instead of raw cumulative reward
+        if "final_score" in info:
+            rollout.final_score = info["final_score"]
+        else:
+            rollout.final_score = max(0.0, cumulative_reward)
+        rollout.total_steps = len(history)
         rollout.resolved = info.get("is_resolved", False)
         rollout.truncated = info.get("truncated", False)  # Fix #8
 
@@ -584,7 +607,7 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
             # Fix #7: Use shared prompt builder for commander too
             last_reward = cumulative_reward
             user_prompt = self._build_commander_user_prompt(
-                triage, step_num, last_reward, history, observation
+                triage, step_num, last_reward, history, observation, max_steps
             )
             cmdr_full = ""
             for chunk in self._call_llm_stream(COMMANDER_SYSTEM_PROMPT, user_prompt):

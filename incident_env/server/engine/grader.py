@@ -149,7 +149,7 @@ class RewardConfig:
     speed_bonus_max: float = 0.10
 
     # Causal chain similarity
-    chain_similarity_threshold: float = 0.45
+    chain_similarity_threshold: float = 0.20
 
 
 # Default config instance

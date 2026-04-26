@@ -149,7 +149,11 @@ def main():
         start_time = time.time()
         
         try:
-            rollout = orchestrator.run_episode(task_id, max_steps=25, verbose=False)
+            # Fix 1: The hard scenario has 7 services and needs more steps to solve.
+            _SCENARIO_MAX_STEPS = {"easy": 20, "medium": 25, "hard": 30}
+            difficulty = task_id.split("_")[0] if "_" in task_id else task_id
+            ms = _SCENARIO_MAX_STEPS.get(difficulty, 25)
+            rollout = orchestrator.run_episode(task_id, max_steps=ms, verbose=False)
             elapsed = time.time() - start_time
             
             score = rollout.final_score

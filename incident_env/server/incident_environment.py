@@ -213,12 +213,14 @@ class IncidentEnvironment:
         self._grader = Grader(grading_config)
 
         # Initialize state
+        # Fix: Dynamic max_steps per difficulty
+        difficulty_max_steps = {"easy": 20, "medium": 25, "hard": 30}
         self._state = IncidentState(
             episode_id=str(uuid.uuid4()),
             step_count=0,
             scenario_id=self._scenario.scenario_id,
             task_difficulty=self._scenario.difficulty,
-            max_steps=25,
+            max_steps=difficulty_max_steps.get(self._scenario.difficulty, 25),
         )
 
         # Build initial observation
@@ -353,7 +355,10 @@ class IncidentEnvironment:
                 if self._state.wrong_diagnoses > 1:
                     escalation = -0.03 * (2 ** (self._state.wrong_diagnoses - 2))
                     self._state.total_reward += escalation
-                if self._state.wrong_diagnoses >= 3:
+                # Grace investigation phase: don't terminate before step 10
+                if self._state.wrong_diagnoses >= 4 and self._state.step_count < 10:
+                    pass
+                elif self._state.wrong_diagnoses >= 4:
                     self._state.done = True
                     self._state.total_reward -= 0.5
                     grade.feedback = "Episode Terminated: Maximum incorrect diagnoses reached (Anti-Cheat)."
