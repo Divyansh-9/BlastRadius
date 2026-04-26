@@ -228,16 +228,28 @@ print(f"Hub repo has {{len(all_files)}} files")
 for f in sorted(all_files)[:40]:
     print(f"  {{f}}")
 
-# Priority 1: last-checkpoint/ (most trained weights)
-# Priority 2: root-level adapter (step 50 fallback)
-# Priority 3: sft_checkpoint/ (clean SFT as last resort)
-has_last = any(f.startswith("last-checkpoint/") for f in all_files)
-has_root  = any("adapter_config.json" == f for f in all_files)
+# STRATEGY: sft_checkpoint FIRST (validated, format-trained, stable)
+# Fallback: last-checkpoint, then root adapter
 has_sft   = any(f.startswith("sft_checkpoint/") for f in all_files)
+has_last  = any(f.startswith("last-checkpoint/") for f in all_files)
+has_root  = any("adapter_config.json" == f for f in all_files)
 
-if has_last:
+if has_sft:
     print("")
-    print(">>> STRATEGY: Using last-checkpoint (best trained weights) <<<")
+    print(">>> STRATEGY: Using sft_checkpoint (validated, format-trained) <<<")
+    snapshot_download(
+        repo_id=hub_id, local_dir=base_out,
+        allow_patterns=["sft_checkpoint/**"],
+        token=token,
+    )
+    src = os.path.join(base_out, "sft_checkpoint")
+    if os.path.isdir(src):
+        for f in os.listdir(src):
+            shutil.move(os.path.join(src, f), os.path.join(base_out, f))
+        os.rmdir(src)
+elif has_last:
+    print("")
+    print(">>> STRATEGY: Using last-checkpoint (GRPO fallback) <<<")
     snapshot_download(
         repo_id=hub_id, local_dir=base_out,
         allow_patterns=["last-checkpoint/**"],
@@ -248,17 +260,6 @@ if has_last:
         for f in os.listdir(src):
             shutil.move(os.path.join(src, f), os.path.join(base_out, f))
         os.rmdir(src)
-elif has_root:
-    print("")
-    print(">>> STRATEGY: Using root-level adapter (step 50) <<<")
-    snapshot_download(
-        repo_id=hub_id, local_dir=base_out,
-        ignore_patterns=["sft_checkpoint/**", "last-checkpoint/**", "benchmark_results/**", "*.md"],
-        token=token,
-    )
-elif has_sft:
-    print("")
-    print(">>> STRATEGY: Falling back to SFT checkpoint <<<")
     snapshot_download(
         repo_id=hub_id, local_dir=base_out,
         allow_patterns=["sft_checkpoint/**"],
