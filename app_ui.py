@@ -123,7 +123,7 @@ def _benchmark_table_md() -> str:
     return rows
 
 
-with gr.Blocks(theme=gr.themes.Monochrome()) as demo:
+with gr.Blocks() as demo:
     gr.Markdown("# 🚨 SRE Incident Response Simulator")
     gr.Markdown(
         "Agent benchmark environment for debugging cascading production failures. "
@@ -159,8 +159,17 @@ with gr.Blocks(theme=gr.themes.Monochrome()) as demo:
     reset_btn.click(fn=handle_reset, inputs=[task_dropdown], outputs=[obs_display, state_display, action_status])
     step_btn.click(fn=handle_step, inputs=[command_dropdown, target_input, params_input], outputs=[obs_display, state_display, action_status])
 
-# Mount Gradio securely onto the internal FastAPI loop for 7860
+# Mount Gradio securely onto the internal FastAPI loop for the war room
 fast_app = gr.mount_gradio_app(fast_app, demo, path="/ui")
+
+import os
+from fastapi.staticfiles import StaticFiles
+
+frontend_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+if os.path.exists(frontend_dist):
+    fast_app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+else:
+    print(f"Warning: React frontend not found at {frontend_dist}. Run 'npm run build' inside 'frontend'.")
 
 if __name__ == "__main__":
     uvicorn.run(fast_app, host="0.0.0.0", port=7860)
