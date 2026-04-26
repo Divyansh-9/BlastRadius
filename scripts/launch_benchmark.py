@@ -236,7 +236,7 @@ for f in sft_files:
 
 if not sft_files:
     print("FATAL: sft_checkpoint/ not found in Hub repo!")
-    top_dirs = sorted({f.split("/")[0] for f in all_files if "/" in f})
+    top_dirs = sorted(set(f.split("/")[0] for f in all_files if "/" in f))
     print("Available top-level dirs:", top_dirs)
     sys.exit(1)
 
