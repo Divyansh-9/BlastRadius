@@ -49,12 +49,15 @@ HUB_MODEL_ID  = os.environ["HUB_MODEL_ID"]
 parser = argparse.ArgumentParser()
 parser.add_argument("--flavor", default="h200", help="HF Job GPU flavor (default: h200)")
 parser.add_argument("--scenarios", default="easy medium hard", help="Space-separated scenario IDs")
+parser.add_argument("--qwen3", action="store_true", help="Use Qwen3-14B base model with thinking mode (no SFT adapter)")
 args, _ = parser.parse_known_args()
 
 FLAVOR       = args.flavor
 SCENARIOS    = args.scenarios
+USE_QWEN3    = args.qwen3
 TIMEOUT      = "1h"
 DOCKER_IMAGE = "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel"
+QWEN3_MODEL  = "unsloth/Qwen3-14B-bnb-4bit"
 
 # ── The inline server script (written to disk inside the job) ────────────────
 INFERENCE_SERVER_PY = r'''
@@ -75,24 +78,34 @@ model = None
 tokenizer = None
 model_lock = threading.Lock()
 
-BASE_MODEL   = os.environ.get("BASE_MODEL", "unsloth/Qwen2.5-14B-Instruct-bnb-4bit")
-ADAPTER_PATH = os.environ.get("ADAPTER_PATH", "/workspace/models/grpo_adapter")
-MAX_NEW_TOKENS = int(os.environ.get("MAX_NEW_TOKENS", "512"))
+BASE_MODEL     = os.environ.get("BASE_MODEL", "unsloth/Qwen2.5-14B-Instruct-bnb-4bit")
+ADAPTER_PATH   = os.environ.get("ADAPTER_PATH", "/workspace/models/grpo_adapter")
+MAX_NEW_TOKENS = int(os.environ.get("MAX_NEW_TOKENS", "600"))
+USE_QWEN3      = os.environ.get("USE_QWEN3", "0") == "1"
+QWEN3_MODEL    = os.environ.get("QWEN3_MODEL", "unsloth/Qwen3-14B-bnb-4bit")
 
 
 def load_model():
     global model, tokenizer
-    print(f"Loading base model: {BASE_MODEL}")
-    print(f"Loading LoRA adapter: {ADAPTER_PATH}")
     from unsloth import FastLanguageModel
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=ADAPTER_PATH,
-        max_seq_length=4096,
-        load_in_4bit=True,
-        dtype=None,
-    )
+    if USE_QWEN3:
+        print("MODE: Qwen3-14B with thinking mode")
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=QWEN3_MODEL,
+            max_seq_length=8192,
+            load_in_4bit=True,
+            dtype=None,
+        )
+    else:
+        print(f"MODE: SFT adapter from {ADAPTER_PATH}")
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=ADAPTER_PATH,
+            max_seq_length=4096,
+            load_in_4bit=True,
+            dtype=None,
+        )
     FastLanguageModel.for_inference(model)
-    print("Model loaded and ready for inference.")
+    print("Model loaded and ready.")
 
 
 class ChatMessage(BaseModel):
@@ -125,25 +138,42 @@ def chat_completions(req: ChatRequest):
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded yet")
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
-    inputs = tokenizer.apply_chat_template(
-        messages,
-        return_tensors="pt",
-        tokenize=True,
-        add_generation_prompt=True,
-    ).to("cuda")
+    if USE_QWEN3:
+        # Qwen3: enable built-in chain-of-thought thinking
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            return_tensors="pt",
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        ).to("cuda")
+        do_sample, temperature, top_p = True, 0.6, 0.95
+    else:
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            return_tensors="pt",
+            tokenize=True,
+            add_generation_prompt=True,
+        ).to("cuda")
+        do_sample, temperature, top_p = False, 1.0, 1.0
     # Force greedy decoding for benchmarking — deterministic, structured output
     with model_lock:
         with torch.no_grad():
             out = model.generate(
                 inputs,
                 max_new_tokens=req.max_tokens or MAX_NEW_TOKENS,
-                do_sample=False,          # greedy — no randomness
-                temperature=1.0,          # ignored when do_sample=False
-                repetition_penalty=1.1,   # prevent looping
+                do_sample=do_sample,
+                temperature=temperature,
+                top_p=top_p,
+                repetition_penalty=1.1,
                 pad_token_id=tokenizer.eos_token_id,
             )
     new_tokens = out[0][inputs.shape[-1]:]
     text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+    # Qwen3: strip internal <think> block — only keep the final answer
+    if USE_QWEN3 and "<think>" in text:
+        import re as _re
+        text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
     return {
         "id": f"chatcmpl-{int(time.time())}",
         "object": "chat.completion",
@@ -305,9 +335,10 @@ sleep 8
 curl -sf http://localhost:7860/health | python3 -c "import sys,json; d=json.load(sys.stdin); print('Env server OK:', d)" || echo "WARNING: env health check soft-failed"
 
 echo "==> Starting Unsloth inference server on port 8000 (background)"
-BASE_MODEL="unsloth/Qwen2.5-14B-Instruct-bnb-4bit" \
 ADAPTER_PATH="/workspace/models/grpo_adapter" \
 MAX_NEW_TOKENS="600" \
+USE_QWEN3="{1 if USE_QWEN3 else 0}" \
+QWEN3_MODEL="{QWEN3_MODEL}" \
 python3 /workspace/inference_server.py &
 INFER_PID=$!
 
