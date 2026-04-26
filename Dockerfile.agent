@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY incident_env/ ./incident_env/
+COPY agent/ ./agent/
+COPY pyproject.toml .
+
+CMD ["python", "-m", "agent.orchestrator", "--task", "easy"]

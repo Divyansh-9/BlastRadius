@@ -1,0 +1,36 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+*.log
+!docs/runs/*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Local model checkpoints (large, pushed to HF Hub instead)
+models/
+
+# Local agent skills/workflows scratchpad — not part of the project
+.agent/
+
+# One-off utility scripts (kept local, not committed)
+scrub_token.py
+push_blog_to_hf.py
+push_to_hf_space.py
+
+# Backup/temp files left by data-rewrite scripts
+*.bak
+*.tmp

@@ -1,0 +1,115 @@
+spec_version: 1
+name: incident-response-env
+type: incident_response
+runtime: docker
+app: incident_env.server.app:app
+port: 7860
+hf_space: https://huggingface.co/spaces/ainey1116/incident-response-env
+github: https://github.com/Divyansh-9/BlastRadius
+description: >
+  IT Incident Response Environment — an OpenEnv-compliant RL environment
+  that simulates production infrastructure failures. Agents diagnose
+  cascading service outages, identify root causes via causal reasoning,
+  and apply fixes under time pressure as failures spread.
+
+reward_range: [0.0, 1.0]
+
+observation_schema:
+  type: object
+  properties:
+    output:
+      type: string
+      description: Human-readable command output (logs, metrics, status)
+    services_status:
+      type: object
+      description: "Map of service_name -> status (HEALTHY | DEGRADED | DOWN)"
+    active_alerts:
+      type: array
+      items:
+        type: string
+      description: Currently firing alert messages
+    cascade_events:
+      type: array
+      items:
+        type: object
+      description: Structured list of active failure cascade events
+    time_elapsed_minutes:
+      type: integer
+      description: Simulated clock in minutes since incident start
+    incident_severity:
+      type: string
+      enum: [P1, P2, P3]
+      description: Computed incident severity
+    services_at_risk:
+      type: array
+      items:
+        type: string
+      description: Services trending toward failure based on cascade rules
+
+action_schema:
+  type: object
+  required: [command]
+  properties:
+    command:
+      type: string
+      enum:
+        - check_status
+        - check_logs
+        - check_metrics
+        - check_dependencies
+        - diagnose
+        - restart_service
+        - rollback_deploy
+        - scale_service
+      description: The action command to execute
+    target:
+      type: string
+      description: Target service name (required for all non-check_status commands)
+    parameters:
+      type: object
+      description: >
+        Additional action parameters.
+        For diagnose: {root_cause, causal_chain, confidence}
+        For scale_service: {replicas}
+
+tasks:
+  - id: easy
+    name: "Database Connection Pool Exhaustion"
+    difficulty: easy
+    description: "Single service failure with clear diagnostic signals"
+  - id: medium
+    name: "Bad Deployment Cascade"
+    difficulty: medium
+    description: "Root cause analysis with red herring victim services"
+  - id: hard
+    name: "Thundering Herd After CDN Cache Invalidation"
+    difficulty: hard
+    description: "Multi-service cascade with misleading signals and fix-order constraints"
+  - id: easy_dns_propagation
+    name: "Stale DNS TTL Propagation"
+    difficulty: easy
+    description: "Diagnose a routing issue causing traffic drops after infrastructure migration."
+  - id: easy_redis_oom
+    name: "Redis OOM Catastrophe"
+    difficulty: easy
+    description: "Session cache exhausts memory causing logouts. Rollback bad deploy."
+  - id: medium_cert_expiry
+    name: "Internal mTLS Certificate Expiry"
+    difficulty: medium
+    description: "Expired internal certs cause silent 502s upstream. Renew and reset proxies."
+  - id: medium_k8s_eviction
+    name: "Kubernetes Pod Eviction Storm"
+    difficulty: medium
+    description: "Noisy neighbor memory leak triggers cluster-wide pod eviction storm."
+  - id: hard_regex_catastrophe
+    name: "WAF Regex Catastrophe"
+    difficulty: hard
+    description: "Bad firewall regex triggers DDoS-like CPU starvation and TCP queue drops."
+  - id: hard_db_failover
+    name: "Database Split-Brain Failover"
+    difficulty: hard
+    description: "Stale replica promotion leads to split-brain. Resolve topology and flush connections."
+  - id: hard_s3_keyspace_overflow
+    name: "Object Storage Keyspace Overflow"
+    difficulty: hard
+    description: "Runaway batch job overwhelms metadata index causing read timeouts."

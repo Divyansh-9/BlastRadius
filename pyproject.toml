@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "incident-response-env"
+version = "1.0.0"
+description = "IT Incident Response OpenEnv: an RL environment for SRE/DevOps agent training"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.0.0",
+    "requests>=2.31.0",
+    "openai>=1.0.0",
+    "gradio>=4.0.0",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "httpx>=0.25.0",
+]
+# `train_sft` / `train_grpo`: split so HF Jobs can run Stage 1 without pulling
+# vLLM (vLLM frequently replaces the base torch build and is what breaks CUDA on
+# some H200 nodes before SFT even starts). Notebooks and local dev still use
+# `train` = everything in one install.
+# Kept self-contained so requirements.txt stays stripped for the HF Space
+# docker build (heavy ML deps would otherwise blow that build's image budget).
+train_sft = [
+    "trl>=0.12.0,<0.18.0",
+    "peft>=0.10.0,<0.14.0",
+    "transformers>=4.46.0,<4.50.0",
+    "bitsandbytes>=0.43.0",
+    "wandb>=0.16.0",
+    "huggingface_hub>=0.23.0",
+    "datasets>=2.18.0",
+    "plotly>=5.0.0",
+    "networkx>=3.0",
+    "python-dotenv>=1.0.0",
+]
+train_grpo = [
+    "trl>=0.12.0,<0.18.0",
+    "peft>=0.10.0,<0.14.0",
+    "transformers>=4.46.0,<4.50.0",
+    "bitsandbytes>=0.43.0",
+    "wandb>=0.16.0",
+    "huggingface_hub>=0.23.0",
+    "datasets>=2.18.0",
+    "python-dotenv>=1.0.0",
+]
+train_grpo_vllm = [
+    "vllm>=0.5.0",
+]
+train = [
+    "trl>=0.12.0,<0.18.0",
+    "peft>=0.10.0,<0.14.0",
+    "transformers>=4.46.0,<4.50.0",
+    "bitsandbytes>=0.43.0",
+    "vllm>=0.5.0",
+    "wandb>=0.16.0",
+    "huggingface_hub>=0.23.0",
+    "datasets>=2.18.0",
+    "plotly>=5.0.0",
+    "networkx>=3.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["incident_env*", "server*"]
