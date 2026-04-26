@@ -236,7 +236,8 @@ has_root  = any("adapter_config.json" == f for f in all_files)
 has_sft   = any(f.startswith("sft_checkpoint/") for f in all_files)
 
 if has_last:
-    print("\n>>> STRATEGY: Using last-checkpoint (best trained weights) <<<")
+    print("")
+    print(">>> STRATEGY: Using last-checkpoint (best trained weights) <<<")
     snapshot_download(
         repo_id=hub_id, local_dir=base_out,
         allow_patterns=["last-checkpoint/**"],
@@ -248,14 +249,16 @@ if has_last:
             shutil.move(os.path.join(src, f), os.path.join(base_out, f))
         os.rmdir(src)
 elif has_root:
-    print("\n>>> STRATEGY: Using root-level adapter (step 50) <<<")
+    print("")
+    print(">>> STRATEGY: Using root-level adapter (step 50) <<<")
     snapshot_download(
         repo_id=hub_id, local_dir=base_out,
         ignore_patterns=["sft_checkpoint/**", "last-checkpoint/**", "benchmark_results/**", "*.md"],
         token=token,
     )
 elif has_sft:
-    print("\n>>> STRATEGY: Falling back to SFT checkpoint <<<")
+    print("")
+    print(">>> STRATEGY: Falling back to SFT checkpoint <<<")
     snapshot_download(
         repo_id=hub_id, local_dir=base_out,
         allow_patterns=["sft_checkpoint/**"],
@@ -267,10 +270,12 @@ elif has_sft:
             shutil.move(os.path.join(src, f), os.path.join(base_out, f))
         os.rmdir(src)
 else:
-    print("\n>>> STRATEGY: Downloading all files <<<")
+    print("")
+    print(">>> STRATEGY: Downloading all files <<<")
     snapshot_download(repo_id=hub_id, local_dir=base_out, token=token)
 
-print("\nAdapter ready at:", base_out)
+print("")
+print("Adapter ready at:", base_out)
 print("Files:", sorted(os.listdir(base_out)))
 DOWNLOAD
 
