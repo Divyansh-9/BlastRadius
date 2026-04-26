@@ -195,5 +195,5 @@ class MediumScenario(BaseScenario):
                 "auth-service", "payment-service", "worker-queue",
             ],
             max_optimal_steps=8,
-            max_total_reward=1.02,
+            # max_total_reward computed analytically by Grader.__init__
         )

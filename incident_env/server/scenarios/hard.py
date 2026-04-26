@@ -295,5 +295,5 @@ class HardScenario(BaseScenario):
                 # cdn intentionally excluded: it's a red herring (healthy but misleading metrics)
             ],
             max_optimal_steps=12,
-            max_total_reward=1.22,
+            # max_total_reward computed analytically by Grader.__init__
         )

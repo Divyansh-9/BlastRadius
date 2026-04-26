@@ -79,6 +79,8 @@ class Rollout:
     steps: List[RolloutStep] = field(default_factory=list)
     final_score: float = 0.0
     total_steps: int = 0
+    real_env_steps: int = 0          # Steps that reached the environment
+    parse_failure_steps: int = 0     # Steps wasted on API parse failures
     resolved: bool = False
     truncated: bool = False            # Fix #8: distinguish timeout from resolution
 
@@ -499,11 +501,13 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
                 reward = -0.05   # penalty for bad format
                 done = False
                 env_result = {"reward": reward, "done": done, "observation": observation, "info": {}}
+                rollout.parse_failure_steps += 1
             else:
                 env_result = self._env_step(action)
                 reward = env_result.get("reward", 0.0)
                 done = env_result.get("done", False)
                 observation = env_result.get("observation", {})
+                rollout.real_env_steps += 1
             cumulative_reward += reward
 
             if verbose:

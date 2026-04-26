@@ -160,5 +160,5 @@ class EasyScenario(BaseScenario):
             correct_fix_order=["database"],
             useful_investigation_targets=["database", "api-gateway"],
             max_optimal_steps=5,
-            max_total_reward=0.77,
+            # max_total_reward computed analytically by Grader.__init__
         )

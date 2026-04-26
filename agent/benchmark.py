@@ -159,15 +159,20 @@ def main():
             score = rollout.final_score
             resolved = rollout.resolved
             steps = rollout.total_steps
+            real_steps = rollout.real_env_steps
+            parse_fails = rollout.parse_failure_steps
             
             icon = "✅" if score >= 0.7 else ("🟡" if score >= 0.4 else "🔴")
-            print(f" done in {elapsed:.1f}s | Score: {score:.4f} {icon} | Resolved: {resolved} | Steps: {steps}")
+            parse_warn = f" | ⚠ {parse_fails} parse-fail steps" if parse_fails > 0 else ""
+            print(f" done in {elapsed:.1f}s | Score: {score:.4f} {icon} | Resolved: {resolved} | Steps: {steps} (real: {real_steps}){parse_warn}")
             
             results.append({
                 "task_id": task_id,
                 "score": score,
                 "resolved": resolved,
                 "steps": steps,
+                "real_env_steps": real_steps,
+                "parse_failure_steps": parse_fails,
                 "time_sec": elapsed,
             })
             
