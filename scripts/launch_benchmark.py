@@ -131,13 +131,15 @@ def chat_completions(req: ChatRequest):
         tokenize=True,
         add_generation_prompt=True,
     ).to("cuda")
+    # Force greedy decoding for benchmarking — deterministic, structured output
     with model_lock:
         with torch.no_grad():
             out = model.generate(
                 inputs,
                 max_new_tokens=req.max_tokens or MAX_NEW_TOKENS,
-                do_sample=(req.temperature or 0) > 0,
-                temperature=req.temperature or 1.0,
+                do_sample=False,          # greedy — no randomness
+                temperature=1.0,          # ignored when do_sample=False
+                repetition_penalty=1.1,   # prevent looping
                 pad_token_id=tokenizer.eos_token_id,
             )
     new_tokens = out[0][inputs.shape[-1]:]
@@ -214,52 +216,62 @@ python3 -c "import torch; assert torch.cuda.is_available(); print('Post-pip CUDA
 echo "==> Downloading GRPO LoRA adapter from Hub"
 python3 << 'DOWNLOAD'
 import os, shutil
-from huggingface_hub import snapshot_download, list_repo_files, hf_hub_download
-from pathlib import Path
+from huggingface_hub import snapshot_download, list_repo_files
 
 hub_id = "{HUB_MODEL_ID}"
-out    = "/workspace/models/grpo_adapter"
-token  = os.environ.get("HF_TOKEN")
-os.makedirs(out, exist_ok=True)
+base_out = "/workspace/models/grpo_adapter"
+token    = os.environ.get("HF_TOKEN")
+os.makedirs(base_out, exist_ok=True)
 
-# -- Inspect what's actually on the Hub --
 all_files = list(list_repo_files(hub_id, repo_type="model", token=token))
-print(f"Hub repo has {{len(all_files)}} files:")
-for f in all_files[:30]:
+print(f"Hub repo has {{len(all_files)}} files")
+for f in sorted(all_files)[:40]:
     print(f"  {{f}}")
 
-# -- Detect structure --
-# Case A: files are in grpo_checkpoint/ subfolder
-# Case B: adapter files are at root (adapter_config.json, etc.)
-has_subfolder = any(f.startswith("grpo_checkpoint/") for f in all_files)
-has_root_adapter = any("adapter_config.json" in f and "/" not in f for f in all_files)
+# Priority 1: last-checkpoint/ (most trained weights)
+# Priority 2: root-level adapter (step 50 fallback)
+# Priority 3: sft_checkpoint/ (clean SFT as last resort)
+has_last = any(f.startswith("last-checkpoint/") for f in all_files)
+has_root  = any("adapter_config.json" == f for f in all_files)
+has_sft   = any(f.startswith("sft_checkpoint/") for f in all_files)
 
-if has_subfolder:
-    print("Detected: grpo_checkpoint/ subfolder — downloading with pattern")
+if has_last:
+    print("\n>>> STRATEGY: Using last-checkpoint (best trained weights) <<<")
     snapshot_download(
-        repo_id=hub_id, local_dir=out,
-        allow_patterns=["grpo_checkpoint/**", "*.json", "*.safetensors"],
+        repo_id=hub_id, local_dir=base_out,
+        allow_patterns=["last-checkpoint/**"],
         token=token,
     )
-    # Flatten subfolder into out/
-    src = os.path.join(out, "grpo_checkpoint")
+    src = os.path.join(base_out, "last-checkpoint")
     if os.path.isdir(src):
         for f in os.listdir(src):
-            shutil.move(os.path.join(src, f), os.path.join(out, f))
+            shutil.move(os.path.join(src, f), os.path.join(base_out, f))
         os.rmdir(src)
-elif has_root_adapter:
-    print("Detected: adapter files at root — downloading all")
+elif has_root:
+    print("\n>>> STRATEGY: Using root-level adapter (step 50) <<<")
     snapshot_download(
-        repo_id=hub_id, local_dir=out,
-        ignore_patterns=["*.md", "benchmark_results/**"],
+        repo_id=hub_id, local_dir=base_out,
+        ignore_patterns=["sft_checkpoint/**", "last-checkpoint/**", "benchmark_results/**", "*.md"],
         token=token,
     )
+elif has_sft:
+    print("\n>>> STRATEGY: Falling back to SFT checkpoint <<<")
+    snapshot_download(
+        repo_id=hub_id, local_dir=base_out,
+        allow_patterns=["sft_checkpoint/**"],
+        token=token,
+    )
+    src = os.path.join(base_out, "sft_checkpoint")
+    if os.path.isdir(src):
+        for f in os.listdir(src):
+            shutil.move(os.path.join(src, f), os.path.join(base_out, f))
+        os.rmdir(src)
 else:
-    print("Downloading everything and inspecting...")
-    snapshot_download(repo_id=hub_id, local_dir=out, token=token)
+    print("\n>>> STRATEGY: Downloading all files <<<")
+    snapshot_download(repo_id=hub_id, local_dir=base_out, token=token)
 
-print("Adapter ready at:", out)
-print("Files:", os.listdir(out))
+print("\nAdapter ready at:", base_out)
+print("Files:", sorted(os.listdir(base_out)))
 DOWNLOAD
 
 echo "==> Writing inference server script"
@@ -276,8 +288,9 @@ sleep 8
 curl -sf http://localhost:7860/health | python3 -c "import sys,json; d=json.load(sys.stdin); print('Env server OK:', d)" || echo "WARNING: env health check soft-failed"
 
 echo "==> Starting Unsloth inference server on port 8000 (background)"
-BASE_MODEL="unsloth/Qwen2.5-14B-Instruct-bnb-4bit" \\
-ADAPTER_PATH="/workspace/models/grpo_adapter" \\
+BASE_MODEL="unsloth/Qwen2.5-14B-Instruct-bnb-4bit" \
+ADAPTER_PATH="/workspace/models/grpo_adapter" \
+MAX_NEW_TOKENS="600" \
 python3 /workspace/inference_server.py &
 INFER_PID=$!
 
