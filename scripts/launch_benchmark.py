@@ -213,72 +213,78 @@ echo "==> CUDA re-warmup after pip"
 ldconfig 2>/dev/null || true && sleep 3
 python3 -c "import torch; assert torch.cuda.is_available(); print('Post-pip CUDA OK')"
 
-echo "==> Downloading GRPO LoRA adapter from Hub"
+echo "==> Downloading SFT checkpoint from Hub (explicit, verified)"
 python3 << 'DOWNLOAD'
-import os, shutil
+import os, shutil, sys
 from huggingface_hub import snapshot_download, list_repo_files
 
-hub_id = "{HUB_MODEL_ID}"
-base_out = "/workspace/models/grpo_adapter"
-token    = os.environ.get("HF_TOKEN")
-os.makedirs(base_out, exist_ok=True)
+hub_id  = "{HUB_MODEL_ID}"
+out_dir = "/workspace/models/grpo_adapter"
+token   = os.environ.get("HF_TOKEN")
+os.makedirs(out_dir, exist_ok=True)
 
+# -- Inspect Hub structure --
 all_files = list(list_repo_files(hub_id, repo_type="model", token=token))
-print(f"Hub repo has {{len(all_files)}} files")
-for f in sorted(all_files)[:40]:
+print(f"Hub has {{len(all_files)}} files. Listing all:")
+for f in sorted(all_files):
     print(f"  {{f}}")
 
-# STRATEGY: sft_checkpoint FIRST (validated, format-trained, stable)
-# Fallback: last-checkpoint, then root adapter
-has_sft   = any(f.startswith("sft_checkpoint/") for f in all_files)
-has_last  = any(f.startswith("last-checkpoint/") for f in all_files)
-has_root  = any("adapter_config.json" == f for f in all_files)
+sft_files = [f for f in all_files if f.startswith("sft_checkpoint/")]
+print(f"\nSFT checkpoint files found: {{len(sft_files)}}")
+for f in sft_files:
+    print(f"  {{f}}")
 
-if has_sft:
-    print("")
-    print(">>> STRATEGY: Using sft_checkpoint (validated, format-trained) <<<")
-    snapshot_download(
-        repo_id=hub_id, local_dir=base_out,
-        allow_patterns=["sft_checkpoint/**"],
-        token=token,
-    )
-    src = os.path.join(base_out, "sft_checkpoint")
-    if os.path.isdir(src):
-        for f in os.listdir(src):
-            shutil.move(os.path.join(src, f), os.path.join(base_out, f))
-        os.rmdir(src)
-elif has_last:
-    print("")
-    print(">>> STRATEGY: Using last-checkpoint (GRPO fallback) <<<")
-    snapshot_download(
-        repo_id=hub_id, local_dir=base_out,
-        allow_patterns=["last-checkpoint/**"],
-        token=token,
-    )
-    src = os.path.join(base_out, "last-checkpoint")
-    if os.path.isdir(src):
-        for f in os.listdir(src):
-            shutil.move(os.path.join(src, f), os.path.join(base_out, f))
-        os.rmdir(src)
-    snapshot_download(
-        repo_id=hub_id, local_dir=base_out,
-        allow_patterns=["sft_checkpoint/**"],
-        token=token,
-    )
-    src = os.path.join(base_out, "sft_checkpoint")
-    if os.path.isdir(src):
-        for f in os.listdir(src):
-            shutil.move(os.path.join(src, f), os.path.join(base_out, f))
-        os.rmdir(src)
+if not sft_files:
+    print("FATAL: sft_checkpoint/ not found in Hub repo!")
+    print("Available top-level dirs:", sorted({f.split('/')[0] for f in all_files if '/' in f}))
+    sys.exit(1)
+
+# -- Download sft_checkpoint only --
+print("\nDownloading sft_checkpoint...")
+snapshot_download(
+    repo_id=hub_id,
+    local_dir=out_dir,
+    allow_patterns=["sft_checkpoint/*", "sft_checkpoint/**"],
+    token=token,
+)
+
+# -- Flatten sft_checkpoint/ -> out_dir/ --
+src = os.path.join(out_dir, "sft_checkpoint")
+if os.path.isdir(src):
+    print(f"Flattening {{src}} -> {{out_dir}}")
+    for fname in os.listdir(src):
+        shutil.move(os.path.join(src, fname), os.path.join(out_dir, fname))
+    shutil.rmtree(src, ignore_errors=True)
+
+# -- Verify --
+files_present = sorted(os.listdir(out_dir))
+print(f"\nFiles in {{out_dir}}: {{files_present}}")
+
+has_adapter = os.path.exists(os.path.join(out_dir, "adapter_config.json"))
+has_config  = os.path.exists(os.path.join(out_dir, "config.json"))
+
+if has_adapter:
+    print("VERIFIED: adapter_config.json present (LoRA adapter)")
+elif has_config:
+    print("VERIFIED: config.json present (full model)")
 else:
-    print("")
-    print(">>> STRATEGY: Downloading all files <<<")
-    snapshot_download(repo_id=hub_id, local_dir=base_out, token=token)
+    print("FATAL: Neither adapter_config.json nor config.json found!")
+    print("Downloaded files:", files_present)
+    sys.exit(1)
 
-print("")
-print("Adapter ready at:", base_out)
-print("Files:", sorted(os.listdir(base_out)))
+print("\nSFT checkpoint ready.")
 DOWNLOAD
+
+# Hard abort if model dir is empty or missing config
+python3 -c "
+import os, sys
+out = '/workspace/models/grpo_adapter'
+files = os.listdir(out) if os.path.isdir(out) else []
+if not any(f in files for f in ['adapter_config.json', 'config.json']):
+    print('ABORT: Model not properly downloaded. Refusing to start inference server.')
+    sys.exit(1)
+print('Pre-flight check PASSED:', files)
+"
 
 echo "==> Writing inference server script"
 cat > /workspace/inference_server.py << 'SERVEREOF'

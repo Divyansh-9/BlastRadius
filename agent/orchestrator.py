@@ -435,11 +435,17 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
             if verbose:
                 print(f"  [CMDR]  {json.dumps(action)}")
 
-            # ── Execute Action ──
-            env_result = self._env_step(action)
-            reward = env_result.get("reward", 0.0)
-            done = env_result.get("done", False)
-            observation = env_result.get("observation", {})
+            # ── Execute Action (guard against _parse_failure → 422) ──
+            if action.get("command") == "_parse_failure":
+                print(f"  [WARN] Parse failure — model produced malformed output. Skipping env step.", flush=True)
+                reward = -0.05   # penalty for bad format
+                done = False
+                env_result = {"reward": reward, "done": done, "observation": observation, "info": {}}
+            else:
+                env_result = self._env_step(action)
+                reward = env_result.get("reward", 0.0)
+                done = env_result.get("done", False)
+                observation = env_result.get("observation", {})
             cumulative_reward += reward
 
             if verbose:
