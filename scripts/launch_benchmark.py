@@ -147,7 +147,7 @@ def chat_completions(req: ChatRequest):
             add_generation_prompt=True,
             enable_thinking=True,
         ).to("cuda")
-        do_sample, temperature, top_p = True, 0.6, 0.95
+        do_sample, temperature, top_p, top_k = True, 0.6, 0.95, 20
     else:
         inputs = tokenizer.apply_chat_template(
             messages,
@@ -155,7 +155,7 @@ def chat_completions(req: ChatRequest):
             tokenize=True,
             add_generation_prompt=True,
         ).to("cuda")
-        do_sample, temperature, top_p = False, 1.0, 1.0
+        do_sample, temperature, top_p, top_k = False, 1.0, 1.0, 50
     # Force greedy decoding for benchmarking — deterministic, structured output
     with model_lock:
         with torch.no_grad():
@@ -165,6 +165,7 @@ def chat_completions(req: ChatRequest):
                 do_sample=do_sample,
                 temperature=temperature,
                 top_p=top_p,
+                top_k=top_k,
                 repetition_penalty=1.1,
                 pad_token_id=tokenizer.eos_token_id,
             )
