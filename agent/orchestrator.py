@@ -97,42 +97,69 @@ def extract_between_tags(text: str, open_tag: str, close_tag: str) -> str:
 def parse_action_json(text: str) -> Dict[str, Any]:
     """
     Extract and parse the JSON action from the Commander's response.
-    Handles multiple formats:
-    - Raw JSON
-    - JSON inside <action> tags
-    - JSON inside markdown code blocks
-
-    Fix #5: Returns _parse_failure sentinel instead of silently defaulting
-    to check_status, so the grader can apply a negative signal.
+    Extremely robust to prevent parse failures and 422s.
     """
+    import re
+    # Aggressively strip thinking blocks
+    text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    
+    parsed = None
+
     # Try <action> tags first
     action_text = extract_between_tags(text, "<action>", "</action>")
     if action_text:
-        text = action_text
+        try:
+            parsed = json.loads(action_text.strip())
+        except json.JSONDecodeError:
+            pass
+            
+    # Try <tool_call> tags (Claude style fallback)
+    if not parsed:
+        tool_text = extract_between_tags(text, "<tool_call>", "</tool_call>")
+        if tool_text:
+            try:
+                parsed = json.loads(tool_text.strip())
+            except json.JSONDecodeError:
+                pass
 
     # Try markdown code blocks
-    if "```" in text:
+    if not parsed and "```" in text:
         parts = text.split("```")
         if len(parts) >= 2:
             code = parts[1]
             if code.startswith("json"):
                 code = code[4:]
-            text = code.strip()
-
-    # Clean and parse
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # Last resort: find first { ... } block
-        brace_match = re.search(r'\{[^{}]*\}', text)
-        if brace_match:
             try:
-                return json.loads(brace_match.group())
+                parsed = json.loads(code.strip())
             except json.JSONDecodeError:
                 pass
+
+    # Try flexible JSON regex (look for 'command' or 'name')
+    if not parsed:
+        match = re.search(r'\{[^{}]*(?:"command"|"name")\s*:\s*"[^"]+?"[^{}]*\}', text, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+    if not parsed:
         # Fix #5: Return sentinel instead of silently succeeding
         return {"command": "_parse_failure", "target": None}
+
+    # Format normalizer to prevent 422s
+    # Map {"name": ..., "arguments": ...} to {"command": ..., "parameters": ...}
+    if "name" in parsed and "command" not in parsed:
+        parsed["command"] = parsed.pop("name")
+    if "arguments" in parsed and "parameters" not in parsed:
+        parsed["parameters"] = parsed.pop("arguments")
+        
+    # Ensure target exists
+    if "target" not in parsed:
+        parsed["target"] = ""
+        
+    return parsed
 
 
 # ─────────────────────────────────────────────────────────────
@@ -374,8 +401,20 @@ Respond with <think>your reasoning</think> then <action>JSON</action>."""
         user_prompt = self._build_commander_user_prompt(
             triage_report, step_num, last_reward, history, observation
         )
-        full_response = self._call_llm(COMMANDER_SYSTEM_PROMPT, user_prompt)
-        action = parse_action_json(full_response)
+        
+        full_response = ""
+        action = {"command": "_parse_failure", "target": None}
+        
+        for attempt in range(3):
+            full_response = self._call_llm(COMMANDER_SYSTEM_PROMPT, user_prompt)
+            action = parse_action_json(full_response)
+            
+            if action.get("command") != "_parse_failure":
+                break
+                
+            # If parse failed, inform the model
+            print(f"  [WARN] Parse failure retry {attempt+1}/3", flush=True)
+            user_prompt += f"\n\nERROR: Your last response was missing a valid JSON action. You MUST output:\n<action>\n{{\"command\": \"...\", \"target\": \"...\", \"parameters\": {{}}}}\n</action>\nTry again."
 
         return full_response, action
 

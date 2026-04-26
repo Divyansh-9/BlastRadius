@@ -105,6 +105,8 @@ def load_model():
             dtype=None,
         )
     FastLanguageModel.for_inference(model)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     print("Model loaded and ready.")
 
 
