@@ -230,7 +230,8 @@ for f in sorted(all_files):
     print(f"  {{f}}")
 
 sft_files = [f for f in all_files if f.startswith("sft_checkpoint/")]
-print(f"\nSFT checkpoint files found: {{len(sft_files)}}")
+print("")
+print(f"SFT checkpoint files found: {{len(sft_files)}}")
 for f in sft_files:
     print(f"  {{f}}")
 
@@ -241,7 +242,8 @@ if not sft_files:
     sys.exit(1)
 
 # -- Download sft_checkpoint only --
-print("\nDownloading sft_checkpoint...")
+print("")
+print("Downloading sft_checkpoint...")
 snapshot_download(
     repo_id=hub_id,
     local_dir=out_dir,
@@ -259,7 +261,8 @@ if os.path.isdir(src):
 
 # -- Verify --
 files_present = sorted(os.listdir(out_dir))
-print(f"\nFiles in {{out_dir}}: {{files_present}}")
+print("")
+print(f"Files in {{out_dir}}: {{files_present}}")
 
 has_adapter = os.path.exists(os.path.join(out_dir, "adapter_config.json"))
 has_config  = os.path.exists(os.path.join(out_dir, "config.json"))
@@ -273,7 +276,8 @@ else:
     print("Downloaded files:", files_present)
     sys.exit(1)
 
-print("\nSFT checkpoint ready.")
+print("")
+print("SFT checkpoint ready.")
 DOWNLOAD
 
 # Hard abort if model dir is empty or missing config
