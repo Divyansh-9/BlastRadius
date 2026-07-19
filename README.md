@@ -1,12 +1,3 @@
----
-title: BlastRadius
-emoji: 💥
-colorFrom: red
-colorTo: yellow
-sdk: docker
-pinned: false
----
-
 # BlastRadius: The 3 AM Incident Simulator
 
 > **An RL environment and training pipeline for teaching AI agents to respond to production infrastructure incidents.**
